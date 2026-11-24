@@ -13,6 +13,19 @@ const CUSTOM_PRESET_ID_PREFIX = 'custom-'
 
 const FALLBACK_PRESET_NAME = '自定义'
 
+export const BUILTIN_EQ_PRESET_IDS = [
+	'flat',
+	'pop',
+	'rock',
+	'bass_boost',
+	'vocal',
+	'electronic',
+	'classical',
+	'soft_night',
+] as const
+
+const BUILTIN_PRESET_ID_SET = new Set<string>(BUILTIN_EQ_PRESET_IDS)
+
 const storedPresetListSchema = arkType('unknown[]')
 
 const storedPresetSchema = arkType({
@@ -51,7 +64,7 @@ function normalizeGains(gainsDb: readonly number[] | undefined): number[] {
 }
 
 function sanitizePresetName(name: string): string {
-	return name.trim().slice(0, MAX_PRESET_NAME_LENGTH)
+	return Array.from(name.trim()).slice(0, MAX_PRESET_NAME_LENGTH).join('')
 }
 
 function nextCustomPresetId(presets: readonly EqualizerPreset[]): string {
@@ -138,8 +151,13 @@ export function upsertCustomPreset(
 
 	const requestedId = input.id?.trim()
 
-	if (requestedId) {
-		const existing = presets.find((preset) => preset.id === requestedId)
+	const targetId =
+		requestedId && !BUILTIN_PRESET_ID_SET.has(requestedId)
+			? requestedId
+			: undefined
+
+	if (targetId) {
+		const existing = presets.find((preset) => preset.id === targetId)
 
 		if (existing) {
 			const updated: EqualizerPreset = {
@@ -160,7 +178,7 @@ export function upsertCustomPreset(
 	}
 
 	const created: EqualizerPreset = {
-		id: requestedId ?? nextCustomPresetId(presets),
+		id: targetId ?? nextCustomPresetId(presets),
 		name,
 		gainsDb,
 		preampDb,

@@ -2,6 +2,14 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 
 import {
+	BUILTIN_EQ_PRESETS,
+	EQ_BAND_COUNT,
+	EQ_MAX_GAIN_DB,
+	EQ_MIN_GAIN_DB,
+} from '@bbplayer/orpheus/src/equalizerPresets.ts'
+
+import {
+	BUILTIN_EQ_PRESET_IDS,
 	deleteCustomPreset,
 	findPresetDisplayName,
 	parseCustomPresetsJson,
@@ -211,6 +219,12 @@ test('renameCustomPreset 重命名并拦截空名', () => {
 	const trimmed = renameCustomPreset(presets, 'custom-2', '一'.repeat(40))
 
 	assert.equal(trimmed[1].name.length, 24)
+
+	const emoji = renameCustomPreset(presets, 'custom-1', '🎵'.repeat(30))
+
+	assert.equal(Array.from(emoji[0].name).length, 24)
+
+	assert.equal(emoji[0].name, '🎵'.repeat(24))
 })
 
 test('deleteCustomPreset 与 findPresetDisplayName 行为符合预期', () => {
@@ -239,6 +253,52 @@ test('deleteCustomPreset 与 findPresetDisplayName 行为符合预期', () => {
 	)
 
 	assert.equal(findPresetDisplayName('flat', BUILTIN_PRESETS, []), '平坦')
+})
+
+test('内置预设 ID 不得被自定义预设占用', () => {
+	const builtinIds = BUILTIN_EQ_PRESETS.map((preset) => preset.id).sort()
+
+	assert.deepEqual([...BUILTIN_EQ_PRESET_IDS].sort(), builtinIds)
+
+	for (const id of builtinIds) {
+		const result = upsertCustomPreset([], {
+			id,
+			name: `占用 ${id}`,
+			gainsDb: FLAT_GAINS,
+			preampDb: 0,
+		})
+
+		assert.notEqual(result.preset.id, id)
+
+		assert.equal(result.preset.isBuiltin, false)
+	}
+})
+
+test('与 orpheus 常量防漂移：段数、增益边界与 ID 集合', () => {
+	assert.equal(FLAT_GAINS.length, EQ_BAND_COUNT)
+
+	const created = upsertCustomPreset([], {
+		name: '边界',
+		gainsDb: [EQ_MAX_GAIN_DB + 6, EQ_MIN_GAIN_DB - 6],
+		preampDb: EQ_MAX_GAIN_DB + 3,
+	})
+
+	assert.equal(created.preset.gainsDb.length, EQ_BAND_COUNT)
+
+	assert.equal(created.preset.gainsDb[0], EQ_MAX_GAIN_DB)
+
+	assert.equal(created.preset.gainsDb[1], EQ_MIN_GAIN_DB)
+
+	assert.equal(created.preset.preampDb, EQ_MAX_GAIN_DB)
+
+	const kept = upsertCustomPreset([], {
+		id: 'my-custom',
+		name: '自定义 ID',
+		gainsDb: FLAT_GAINS,
+		preampDb: 0,
+	})
+
+	assert.equal(kept.preset.id, 'my-custom')
 })
 
 test('serializeCustomPresets 与 parseCustomPresetsJson 可往返', () => {

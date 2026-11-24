@@ -8,7 +8,7 @@ import {
 } from '@bbplayer/orpheus'
 import { useRouter } from 'expo-router'
 import { useCallback, useEffect, useRef, useState } from 'react'
-import type { LayoutChangeEvent } from 'react-native'
+import type { AccessibilityActionEvent, LayoutChangeEvent } from 'react-native'
 import { Platform, ScrollView, StyleSheet, View } from 'react-native'
 import { GestureDetector, usePanGesture } from 'react-native-gesture-handler'
 import {
@@ -81,6 +81,7 @@ interface PreampControlProps {
 	value: number
 	onChange: (preampDb: number) => void
 	onCommit: (preampDb: number) => void
+	onDragActiveChange: (active: boolean) => void
 }
 
 function PreampControl({
@@ -88,6 +89,7 @@ function PreampControl({
 	value,
 	onChange,
 	onCommit,
+	onDragActiveChange,
 }: PreampControlProps) {
 	const { colors } = useTheme()
 
@@ -138,6 +140,7 @@ function PreampControl({
 		onBegin: (event) => {
 			draggingRef.current = true
 			lastEmitRef.current = 0
+			onDragActiveChange(true)
 
 			const nextValue = valueFromX(event.x)
 
@@ -156,6 +159,8 @@ function PreampControl({
 			setDisplayValue(nextValue)
 
 			onCommit(nextValue)
+
+			onDragActiveChange(false)
 		},
 	})
 
@@ -164,6 +169,24 @@ function PreampControl({
 		onChange(0)
 		onCommit(0)
 	}, [onChange, onCommit])
+
+	const handleAccessibilityAction = useCallback(
+		(event: AccessibilityActionEvent) => {
+			const delta =
+				event.nativeEvent.actionName === 'increment'
+					? PREAMP_STEP_DB
+					: -PREAMP_STEP_DB
+
+			const nextValue = quantizePreampDb(displayValue + delta)
+
+			setDisplayValue(nextValue)
+
+			onChange(nextValue)
+
+			onCommit(nextValue)
+		},
+		[displayValue, onChange, onCommit],
+	)
 
 	const handleTrackLayout = useCallback((event: LayoutChangeEvent) => {
 		const nextWidth = event.nativeEvent.layout.width
@@ -209,6 +232,8 @@ function PreampControl({
 					accessibilityRole='adjustable'
 					accessibilityLabel='前置增益'
 					accessibilityValue={{ text: `${formatPreampDb(displayValue)} 分贝` }}
+					accessibilityActions={[{ name: 'increment' }, { name: 'decrement' }]}
+					onAccessibilityAction={handleAccessibilityAction}
 					style={styles.preampTrackArea}
 					onLayout={handleTrackLayout}
 				>
@@ -276,24 +301,34 @@ export default function EqualizerSettingsPage() {
 		let cancelled = false
 
 		void (async () => {
-			try {
-				const [nativeSettings, customPresetsJson] = await Promise.all([
-					Orpheus.getEqualizerSettings(),
-					Orpheus.getCustomEqualizerPresetsJson(),
-				])
+			const [settingsResult, customPresetsResult] = await Promise.allSettled([
+				Orpheus.getEqualizerSettings(),
+				Orpheus.getCustomEqualizerPresetsJson(),
+			])
 
-				if (cancelled) return
+			if (cancelled) return
 
-				setSettings(nativeSettings)
-
-				setCustomPresets(parseCustomPresetsJson(customPresetsJson))
-			} catch (error) {
-				if (!cancelled) {
-					toastAndLogError('读取均衡器设置失败', error, 'Equalizer')
-				}
-			} finally {
-				if (!cancelled) setLoading(false)
+			if (settingsResult.status === 'fulfilled') {
+				setSettings(settingsResult.value)
+			} else {
+				toastAndLogError(
+					'读取均衡器设置失败',
+					settingsResult.reason,
+					'Equalizer',
+				)
 			}
+
+			if (customPresetsResult.status === 'fulfilled') {
+				setCustomPresets(parseCustomPresetsJson(customPresetsResult.value))
+			} else {
+				toastAndLogError(
+					'读取自定义预设失败',
+					customPresetsResult.reason,
+					'Equalizer',
+				)
+			}
+
+			setLoading(false)
 		})()
 
 		return () => {
@@ -469,11 +504,7 @@ export default function EqualizerSettingsPage() {
 
 	const handlePreampChange = useCallback(
 		(preampDb: number) => {
-			setSettings((previous) => ({
-				...previous,
-				preampDb,
-				activePresetId: null,
-			}))
+			setSettings((previous) => ({ ...previous, preampDb }))
 
 			if (!isAndroid) return
 
@@ -659,8 +690,8 @@ export default function EqualizerSettingsPage() {
 								variant='bodySmall'
 								style={[styles.hint, { color: colors.onSurfaceVariant }]}
 							>
-								省电直通（offload）当前处于开启状态，启用均衡器后会自动改用 PCM
-								播放，耗电可能略有增加。
+								均衡器已开启，已自动切换为 PCM 播放（offload
+								暂停），耗电可能略有增加。
 							</Text>
 						)}
 					</Surface>
@@ -703,6 +734,7 @@ export default function EqualizerSettingsPage() {
 							value={settings.preampDb}
 							onChange={handlePreampChange}
 							onCommit={handlePreampCommit}
+							onDragActiveChange={handleDragActiveChange}
 						/>
 						<View
 							style={[
