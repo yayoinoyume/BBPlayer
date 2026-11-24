@@ -39,35 +39,39 @@ private const val EQ_COEFFICIENT_COUNT = 5
 private const val EQ_PREAMP_RAMP_SAMPLES = 96
 private const val EQ_SOFT_LIMIT_THRESHOLD = 0.85
 private const val EQ_SOFT_LIMIT_RANGE = 0.145
+private const val EQ_SOFT_LIMIT_CEILING = 0.9949999999999999
 private const val EQ_PCM16_SAMPLE_SCALE = 32768.0
 private const val EQ_PCM16_MAX = 32767
 private const val EQ_PCM16_MIN = -32768
 private const val EQ_SQRT_2 = 1.4142135623730951
+private const val EQ_PCM16_BYTES_PER_SAMPLE = 2
+private const val EQ_PCM_FLOAT_BYTES_PER_SAMPLE = 4
 
 private val EQ_IDENTITY_COEFFICIENTS = doubleArrayOf(1.0, 0.0, 0.0, 0.0, 0.0)
 
 private fun sanitizeEqGain(value: Float): Float =
-    if (value.isNaN()) 0f else value.coerceIn(EQ_MIN_GAIN_DB, EQ_MAX_GAIN_DB)
+    if (!value.isFinite()) 0f else value.coerceIn(EQ_MIN_GAIN_DB, EQ_MAX_GAIN_DB)
 
 class EqualizerState(
     val enabled: Boolean = false,
     preampDb: Float = 0f,
     val limiterEnabled: Boolean = true,
-    initialGainsDb: FloatArray = FloatArray(EQ_BAND_COUNT),
+    gainsDb: FloatArray = FloatArray(EQ_BAND_COUNT),
     val version: Long = 0L,
 ) {
     val preampDb: Float = sanitizeEqGain(preampDb)
 
-    private val gains: FloatArray = FloatArray(EQ_BAND_COUNT) { index ->
-        sanitizeEqGain(if (index < initialGainsDb.size) initialGainsDb[index] else 0f)
+    private val gainsInternal: FloatArray = FloatArray(EQ_BAND_COUNT) { index ->
+        sanitizeEqGain(if (index < gainsDb.size) gainsDb[index] else 0f)
     }
 
     val gainsDb: FloatArray
-        get() = gains.copyOf()
+        get() = gainsInternal.copyOf()
 
-    fun copyOfGains(): FloatArray = gains.copyOf()
+    fun copyOfGains(): FloatArray = gainsInternal.copyOf()
 
-    fun gainAt(index: Int): Float = if (index in gains.indices) gains[index] else 0f
+    fun gainAt(index: Int): Float =
+        if (index in gainsInternal.indices) gainsInternal[index] else 0f
 }
 
 object EqualizerConfigHolder {
@@ -81,12 +85,12 @@ object EqualizerConfigHolder {
         preampDb: Float,
         limiterEnabled: Boolean,
         gainsDb: FloatArray,
-    ): EqualizerState = publish { state ->
+    ): EqualizerState = publish {
         EqualizerState(
             enabled = enabled,
             preampDb = preampDb,
             limiterEnabled = limiterEnabled,
-            initialGainsDb = gainsDb,
+            gainsDb = gainsDb,
             version = versionCounter.incrementAndGet(),
         )
     }
@@ -104,10 +108,13 @@ object EqualizerConfigHolder {
             copyState(state, limiterEnabled = limiterEnabled)
         }
 
-    fun setBandGain(index: Int, gainDb: Float): EqualizerState = publish { state ->
-        val gains = state.copyOfGains()
-        if (index in 0 until EQ_BAND_COUNT) gains[index] = gainDb
-        copyState(state, gainsDb = gains)
+    fun setBandGain(index: Int, gainDb: Float): EqualizerState {
+        if (index !in 0 until EQ_BAND_COUNT) return stateRef.get()
+        return publish { state ->
+            val gains = state.copyOfGains()
+            gains[index] = gainDb
+            copyState(state, gainsDb = gains)
+        }
     }
 
     fun setBands(gainsDb: FloatArray): EqualizerState = publish { state ->
@@ -136,7 +143,7 @@ object EqualizerConfigHolder {
         enabled = enabled,
         preampDb = preampDb,
         limiterEnabled = limiterEnabled,
-        initialGainsDb = gainsDb,
+        gainsDb = gainsDb,
         version = versionCounter.incrementAndGet(),
     )
 }
@@ -200,20 +207,19 @@ class EqualizerDsp(
             commitPositions(input, output, src, dst)
             return
         }
-        var channel = 0
-        var preamp = currentPreampGain
-        while (src.remaining() >= 2) {
-            if (channel == 0) preamp = advancePreampGain()
-            val sample = src.getShort().toDouble() / EQ_PCM16_SAMPLE_SCALE
-            val processed = softLimit(filterBands(sample * preamp, channel))
-            val encoded = (processed * EQ_PCM16_SAMPLE_SCALE)
-                .roundToInt()
-                .coerceIn(EQ_PCM16_MIN, EQ_PCM16_MAX)
-            dst.putShort(encoded.toShort())
-            channel += 1
-            if (channel == channelCount) channel = 0
+        val frameBytes = channelCount * EQ_PCM16_BYTES_PER_SAMPLE
+        val frameCount = src.remaining() / frameBytes
+        for (frame in 0 until frameCount) {
+            val preamp = advancePreampGain()
+            for (channel in 0 until channelCount) {
+                val sample = src.getShort().toDouble() / EQ_PCM16_SAMPLE_SCALE
+                val processed = softLimit(filterBands(sample * preamp, channel))
+                val encoded = (processed * EQ_PCM16_SAMPLE_SCALE)
+                    .roundToInt()
+                    .coerceIn(EQ_PCM16_MIN, EQ_PCM16_MAX)
+                dst.putShort(encoded.toShort())
+            }
         }
-        copyRemaining(src, dst)
         commitPositions(input, output, src, dst)
     }
 
@@ -227,28 +233,32 @@ class EqualizerDsp(
             commitPositions(input, output, src, dst)
             return
         }
-        var channel = 0
-        var preamp = currentPreampGain
-        while (src.remaining() >= 4) {
-            if (channel == 0) preamp = advancePreampGain()
-            val raw = src.getFloat().toDouble()
-            val sample = if (raw.isFinite()) raw else 0.0
-            dst.putFloat(softLimit(filterBands(sample * preamp, channel)).toFloat())
-            channel += 1
-            if (channel == channelCount) channel = 0
+        val frameBytes = channelCount * EQ_PCM_FLOAT_BYTES_PER_SAMPLE
+        val frameCount = src.remaining() / frameBytes
+        for (frame in 0 until frameCount) {
+            val preamp = advancePreampGain()
+            for (channel in 0 until channelCount) {
+                val raw = src.getFloat().toDouble()
+                val sample = if (raw.isFinite()) raw else 0.0
+                val processed = softLimit(filterBands(sample * preamp, channel))
+                dst.putFloat(processed.toFloat())
+            }
         }
-        copyRemaining(src, dst)
         commitPositions(input, output, src, dst)
     }
 
     fun softLimit(sample: Double): Double {
+        if (sample.isNaN()) return 0.0
+        if (!sample.isFinite()) {
+            return if (sample > 0.0) EQ_SOFT_LIMIT_CEILING else -EQ_SOFT_LIMIT_CEILING
+        }
         if (!limiterEnabled) return sample.coerceIn(-1.0, 1.0)
         val magnitude = abs(sample)
         if (magnitude <= EQ_SOFT_LIMIT_THRESHOLD) return sample
         val shaped = EQ_SOFT_LIMIT_THRESHOLD +
             EQ_SOFT_LIMIT_RANGE *
             tanh((magnitude - EQ_SOFT_LIMIT_THRESHOLD) / EQ_SOFT_LIMIT_RANGE)
-        return sign(sample) * shaped
+        return sign(sample) * shaped.coerceAtMost(EQ_SOFT_LIMIT_CEILING)
     }
 
     private fun applyState(state: EqualizerState) {
