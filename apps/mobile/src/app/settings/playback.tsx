@@ -1,6 +1,8 @@
 import {
+	BUILTIN_EQ_PRESETS,
 	Orpheus,
 	type AudioQualityPreference,
+	useEqualizerEnabled,
 } from '@bbplayer/orpheus'
 import { useFocusEffect, useRouter } from 'expo-router'
 import { useCallback, useEffect, useState } from 'react'
@@ -23,6 +25,10 @@ import {
 	formatAudioQualityLabel,
 	getAudioQualityOption,
 } from '@/constants/audioQuality'
+import {
+	findPresetDisplayName,
+	parseCustomPresetsJson,
+} from '@/features/equalizer/utils/customPresets'
 import useCurrentTrack from '@/hooks/player/useCurrentTrack'
 import useAppStore from '@/hooks/stores/useAppStore'
 import { useModalStore } from '@/hooks/stores/useModalStore'
@@ -39,6 +45,8 @@ export default function PlaybackSettingsPage() {
 	const allowSimultaneousPlayback = useAppStore(
 		(state) => state.settings.allowSimultaneousPlayback,
 	)
+
+	const equalizerEnabled = useEqualizerEnabled()
 
 	const openModal = useModalStore((state) => state.open)
 	const openedModalCount = useModalStore((state) => state.modals.length)
@@ -62,6 +70,46 @@ export default function PlaybackSettingsPage() {
 	useEffect(() => {
 		syncAudioQuality()
 	}, [openedModalCount, syncAudioQuality])
+
+	const [equalizerPresetName, setEqualizerPresetName] = useState<string | null>(
+		null,
+	)
+
+	useFocusEffect(
+		useCallback(() => {
+			if (!canConfigureAudioQuality) return
+
+			let cancelled = false
+
+			void (async () => {
+				try {
+					const [nativeSettings, customPresetsJson] = await Promise.all([
+						Orpheus.getEqualizerSettings(),
+						Orpheus.getCustomEqualizerPresetsJson(),
+					])
+
+					if (cancelled) return
+
+					setEqualizerPresetName(
+						findPresetDisplayName(
+							nativeSettings.activePresetId,
+							BUILTIN_EQ_PRESETS,
+							parseCustomPresetsJson(customPresetsJson),
+						),
+					)
+				} catch (error) {
+					if (!cancelled) {
+						toastAndLogError('读取均衡器状态失败', error, 'Settings')
+					}
+				}
+			})()
+
+			return () => {
+				cancelled = true
+			}
+		}, [canConfigureAudioQuality]),
+	)
+
 	const defaultPlayerMode = useAppStore(
 		(state) => state.settings.defaultPlayerMode,
 	)
@@ -153,6 +201,31 @@ export default function PlaybackSettingsPage() {
 						</View>
 					</TouchableRipple>
 				)}
+				{canConfigureAudioQuality && (
+					<TouchableRipple
+						testID='playback-equalizer'
+						borderless
+						style={styles.audioQualityRow}
+						onPress={() => router.push('/settings/equalizer')}
+					>
+						<View style={styles.audioQualityRowContent}>
+							<View style={styles.settingDescription}>
+								<Text>均衡器（EQ）</Text>
+								<Text variant='bodySmall'>
+									{equalizerEnabled
+										? `已开启${equalizerPresetName ? ` · ${equalizerPresetName}` : ''}`
+										: '已关闭'}
+								</Text>
+							</View>
+							<View style={styles.audioQualityValue}>
+								<Icon
+									source='chevron-right'
+									size={20}
+								/>
+							</View>
+						</View>
+					</TouchableRipple>
+				)}
 				<View style={styles.settingRow}>
 					<Text>响度均衡（实验性）</Text>
 					<UniversalSwitch
@@ -180,7 +253,7 @@ export default function PlaybackSettingsPage() {
 						}}
 					/>
 				</View>
-
+				const equalizerEnabled = useEqualizerEnabled()
 				<SettingsSectionTitle title='启动时行为' />
 				<View style={styles.settingRow}>
 					<Text>在应用启动时恢复上次播放进度</Text>

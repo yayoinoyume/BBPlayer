@@ -1,4 +1,5 @@
-import { Orpheus } from '@bbplayer/orpheus'
+import { Orpheus, useEqualizerEnabled } from '@bbplayer/orpheus'
+import { useRouter } from 'expo-router'
 import { useEffect, useState } from 'react'
 import { Platform } from 'react-native'
 import { Divider, List } from 'react-native-paper'
@@ -20,7 +21,9 @@ import {
 export function MusicFunctionalMenu({
 	onAction: handleAction,
 }: PlayerMenuContentProps) {
+	const router = useRouter()
 	const currentTrack = useCurrentTrack()
+	const equalizerEnabled = useEqualizerEnabled()
 	const openModal = useModalStore((state) => state.open)
 	const openedModalCount = useModalStore((state) => state.modals.length)
 
@@ -71,6 +74,20 @@ export function MusicFunctionalMenu({
 					onPress={() =>
 						handleAction(() => openModal('AudioQuality', undefined))
 					}
+				/>
+			)}
+			{Platform.OS === 'android' && (
+				<List.Item
+					testID='player-menu-equalizer'
+					title='均衡器'
+					description={equalizerEnabled ? '已开启' : '已关闭'}
+					left={(props) => (
+						<List.Icon
+							{...props}
+							icon='equalizer'
+						/>
+					)}
+					onPress={() => handleAction(() => router.push('/settings/equalizer'))}
 				/>
 			)}
 			<PlayerModeSwitch onAction={handleAction} />
