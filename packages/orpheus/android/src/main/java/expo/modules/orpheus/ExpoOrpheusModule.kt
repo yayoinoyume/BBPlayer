@@ -33,6 +33,7 @@ import expo.modules.kotlin.modules.ModuleDefinition
 import expo.modules.kotlin.typedarray.Float32Array
 import expo.modules.orpheus.util.DirectoryPickerContract
 import expo.modules.orpheus.exception.ControllerNotInitializedException
+import expo.modules.orpheus.manager.AudioQualityInfo
 import expo.modules.orpheus.manager.CoverDownloadManager
 import expo.modules.orpheus.manager.DownloadCache
 import expo.modules.orpheus.manager.LyricsConsumer
@@ -102,6 +103,8 @@ class ExpoOrpheusModule : Module() {
 
     // 记录上一首歌曲的 ID，用于在切歌时发送给 JS
     private var lastMediaId: String? = null
+
+    private var audioQualityListener: OrpheusMusicService.AudioQualityEventListener? = null
 
     val json = Json { ignoreUnknownKeys = true }
 
@@ -236,7 +239,8 @@ class ExpoOrpheusModule : Module() {
             "onStatusBarLyricsStatusChanged",
             "onSpectrumVisualizerEnabledChanged",
             "onRequestClearLyrics",
-            "onQueueChanged"
+            "onQueueChanged",
+            "onAudioQualityChanged"
         )
 
         RegisterActivityContracts {
@@ -303,6 +307,17 @@ class ExpoOrpheusModule : Module() {
                         }
                     })
 
+                    audioQualityListener?.let { previous ->
+                        service.removeAudioQualityEventListener(previous)
+                    }
+                    val qualityListener = object : OrpheusMusicService.AudioQualityEventListener {
+                        override fun onAudioQualityChanged(info: AudioQualityInfo) {
+                            sendEvent("onAudioQualityChanged", info.toMap())
+                        }
+                    }
+                    audioQualityListener = qualityListener
+                    service.addAudioQualityEventListener(qualityListener)
+
                     service.addLyricEventListener(object : OrpheusMusicService.LyricEventListener {
                         override fun onLyricCleared(trackId: String) {
                             sendEvent(
@@ -341,6 +356,10 @@ class ExpoOrpheusModule : Module() {
                 controllerFuture?.let { MediaController.releaseFuture(it) }
                 downloadManager?.removeListener(downloadListener)
                 player?.removeListener(playerListener)
+                audioQualityListener?.let { listener ->
+                    OrpheusMusicService.instance?.removeAudioQualityEventListener(listener)
+                }
+                audioQualityListener = null
                 OrpheusMusicService.removeOnServiceReadyListener { }
                 player = null
                 SpectrumAnalyzer.isCapturing = false
@@ -356,6 +375,10 @@ class ExpoOrpheusModule : Module() {
         Property("preferredBilibiliCdn")
             .get { GeneralStorage.getPreferredBilibiliCdn() }
             .set { preference: String -> GeneralStorage.setPreferredBilibiliCdn(preference) }
+
+        Property("preferredAudioQuality")
+            .get { GeneralStorage.getPreferredAudioQuality() }
+            .set { quality: String -> GeneralStorage.setPreferredAudioQuality(quality) }
 
         Property("loudnessNormalizationEnabled")
             .get { GeneralStorage.isLoudnessNormalizationEnabled() }
@@ -1215,10 +1238,22 @@ class ExpoOrpheusModule : Module() {
             withPlayerOnMainThread { it.playbackParameters.speed }
         }
 
+        AsyncFunction("getCurrentAudioQuality") Coroutine { ->
+            withServiceOnMainThread { service -> service?.getCurrentAudioQuality() }
+        }
+
+        AsyncFunction("reloadCurrentTrackForQualityChange") Coroutine { ->
+            withServiceOnMainThread { service ->
+                service?.reloadCurrentTrackForQualityChange()
+                    ?: mapOf("reloaded" to false, "reason" to "no_track")
+            }
+        }
+
         Function("getLruCachedUris") { uris: List<String> ->
             try {
                 uris.filter { uri ->
-                    expo.modules.orpheus.manager.CachedUriManager.isFullyCached(uri)
+                    expo.modules.orpheus.manager.CachedUriManager.isFullyCached(uri) ||
+                        expo.modules.orpheus.manager.CachedUriManager.isFullyCached(DownloadUtil.playbackCacheKey(uri))
                 }
             } catch (e: Exception) {
                 NativeLog.warning(LogTags.PLAYER, "player.cache.list_failed", error = e)

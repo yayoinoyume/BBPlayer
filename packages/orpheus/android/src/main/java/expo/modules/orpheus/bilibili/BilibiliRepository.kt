@@ -250,7 +250,13 @@ object BilibiliRepository {
                 ),
             )
         }
-        return selected(bvid, "normal", targetAudio ?: dash.audio[0], volume)
+        return selected(bvid, "normal", targetAudio ?: selectClosestAudio(dash.audio, audioQuality), volume)
+    }
+
+    private fun selectClosestAudio(streams: List<DashAudioItem>, audioQuality: Int): DashAudioItem {
+        return streams.filter { it.id <= audioQuality }.maxByOrNull { it.id }
+            ?: streams.minByOrNull { it.id }
+            ?: throw IOException("AudioStreamError: 未找到有效的音频流数据")
     }
 
     private fun selected(bvid: String, kind: String, audio: DashAudioItem, volume: VolumeData?): ResolvedAudio {

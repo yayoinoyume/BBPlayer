@@ -1,18 +1,25 @@
 package expo.modules.orpheus.util
 
 import android.content.Context
+import android.net.Uri
 import androidx.core.net.toUri
+import androidx.media3.common.C
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.database.StandaloneDatabaseProvider
 import androidx.media3.datasource.DataSource
 import androidx.media3.datasource.DataSpec
 import androidx.media3.datasource.ResolvingDataSource
 import androidx.media3.datasource.cache.CacheDataSource
+import androidx.media3.datasource.cache.ContentMetadata
 import androidx.media3.exoplayer.offline.DownloadManager
 import androidx.media3.exoplayer.offline.DownloadNotificationHelper
 import androidx.media3.exoplayer.scheduler.Requirements
 import expo.modules.orpheus.OrpheusConfig
+import expo.modules.orpheus.bilibili.BilibiliAudioQualityId
 import expo.modules.orpheus.bilibili.BilibiliRepository
+import expo.modules.orpheus.manager.AudioQualityInfo
+import expo.modules.orpheus.manager.AudioQualityRequest
+import expo.modules.orpheus.manager.AudioQualityStore
 import expo.modules.orpheus.manager.DownloadCache
 import expo.modules.orpheus.network.BilibiliFallbackDataSource
 import expo.modules.orpheus.network.BilibiliStreamUrls
@@ -78,6 +85,7 @@ object DownloadUtil {
                 .setCache(lruCache)
                 .setUpstreamDataSourceFactory(upstreamFactory)
                 .setFlags(CacheDataSource.FLAG_IGNORE_CACHE_ON_ERROR)
+                .setCacheKeyFactory { dataSpec -> buildCacheKey(dataSpec) }
 
             val downloadFactory = CacheDataSource.Factory()
                 .setCache(downloadCache)
@@ -88,6 +96,45 @@ object DownloadUtil {
             playerDataSourceFactory = downloadFactory
         }
         return playerDataSourceFactory!!
+    }
+
+    fun playbackCacheKey(uriString: String): String = "$uriString|q=${GeneralStorage.getPreferredAudioQuality()}"
+
+    private fun buildCacheKey(dataSpec: DataSpec): String {
+        val uri = dataSpec.uri
+        if (uri.scheme == "orpheus" && uri.host == "bilibili") {
+            return playbackCacheKey(uri.toString())
+        }
+        return dataSpec.key ?: uri.toString()
+    }
+
+    fun isFullyCachedInDownloadCache(context: Context, uriString: String): Boolean {
+        return try {
+            val cache = DownloadCache.getStableCache(context)
+            val contentLength = ContentMetadata.getContentLength(cache.getContentMetadata(uriString))
+            if (contentLength == C.LENGTH_UNSET.toLong() || contentLength <= 0L) return false
+            cache.getCachedSpans(uriString).sumOf { it.length } >= contentLength
+        } catch (e: Exception) {
+            false
+        }
+    }
+
+    private fun resolveAudioQualityRequest(uri: Uri): AudioQualityRequest {
+        AudioQualityStore.preferenceFromQuery(uri.getQueryParameter("q"))?.let { preference ->
+            return AudioQualityStore.requestFor(preference)
+        }
+        if (uri.getQueryParameter("dolby") == "1") {
+            return AudioQualityStore.requestFor(AudioQualityStore.PREF_DOLBY)
+        }
+        if (uri.getQueryParameter("hires") == "1") {
+            return AudioQualityStore.requestFor(AudioQualityStore.PREF_HIRES)
+        }
+        val explicitQuality = uri.getQueryParameter("quality")?.toIntOrNull()
+        if (explicitQuality != null && explicitQuality != BilibiliAudioQualityId.HIGH) {
+            val preference = AudioQualityStore.preferenceForStreamId(explicitQuality) ?: AudioQualityStore.PREF_HIGH
+            return AudioQualityRequest(preference, explicitQuality, false, false)
+        }
+        return AudioQualityStore.requestFor(GeneralStorage.getPreferredAudioQuality())
     }
 
 
@@ -140,13 +187,13 @@ object DownloadUtil {
                 try {
                     val bvid = uri.getQueryParameter("bvid")
                     val cid = uri.getQueryParameter("cid")?.toLongOrNull()
-                    val quality = uri.getQueryParameter("quality")?.toIntOrNull() ?: 30280
+                    val request = resolveAudioQualityRequest(uri)
                     val resolved = BilibiliRepository.resolveAudioUrls(
                         bvid = bvid!!,
                         cid = cid,
-                        audioQuality = quality,
-                        enableDolby = uri.getQueryParameter("dolby") == "1",
-                        enableHiRes = uri.getQueryParameter("hires") == "1",
+                        audioQuality = request.audioQuality,
+                        enableDolby = request.enableDolby,
+                        enableHiRes = request.enableHiRes,
                         cookie = OrpheusConfig.bilibiliCookie,
                         parent = resolveSpan,
                     )
@@ -162,6 +209,18 @@ object DownloadUtil {
                                 resolved.bandwidth?.let { put("bandwidth", it) }
                                 put("mirrors", urls.size)
                             },
+                        )
+                        AudioQualityStore.put(
+                            uri.toString(),
+                            AudioQualityInfo(
+                                preferredQuality = request.preference,
+                                actualKind = resolved.kind,
+                                actualStreamId = resolved.streamId,
+                                codecs = resolved.codecs,
+                                bandwidth = resolved.bandwidth,
+                                isFallback = AudioQualityStore.isFallback(request.preference, resolved.kind, resolved.streamId),
+                                isFromDownloadCache = false,
+                            ),
                         )
                     }
                     // 在这里保存响度均衡数据，并且直接发一个事件，在 OrpheusMusicService 监听

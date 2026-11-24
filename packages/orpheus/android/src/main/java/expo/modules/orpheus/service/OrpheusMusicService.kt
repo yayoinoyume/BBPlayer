@@ -36,6 +36,8 @@ import com.google.common.util.concurrent.Futures
 import com.google.common.util.concurrent.ListenableFuture
 import expo.modules.orpheus.R
 import expo.modules.orpheus.manager.AudioDebugTracker
+import expo.modules.orpheus.manager.AudioQualityInfo
+import expo.modules.orpheus.manager.AudioQualityStore
 import expo.modules.orpheus.manager.FloatingLyricsManager
 import expo.modules.orpheus.manager.LyricsConsumer
 import expo.modules.orpheus.manager.LyriconBackend
@@ -397,6 +399,8 @@ class OrpheusMusicService : MediaLibraryService() {
         )
 
         setupListeners()
+        AudioQualityStore.removeListener(audioQualityStoreListener)
+        AudioQualityStore.addListener(audioQualityStoreListener)
 
         var launchIntent = packageManager.getLaunchIntentForPackage(packageName)
 
@@ -444,6 +448,79 @@ class OrpheusMusicService : MediaLibraryService() {
         return player!!
     }
 
+    interface AudioQualityEventListener {
+        fun onAudioQualityChanged(info: AudioQualityInfo)
+    }
+
+    private val audioQualityEventListeners = CopyOnWriteArrayList<AudioQualityEventListener>()
+
+    fun addAudioQualityEventListener(listener: AudioQualityEventListener) {
+        audioQualityEventListeners.add(listener)
+    }
+
+    fun removeAudioQualityEventListener(listener: AudioQualityEventListener) {
+        audioQualityEventListeners.remove(listener)
+    }
+
+    private val audioQualityStoreListener: (String, AudioQualityInfo) -> Unit = { uri, info ->
+        serviceHandler.post {
+            val currentUri = player?.currentMediaItem?.localConfiguration?.uri?.toString()
+            if (currentUri == uri) {
+                broadcastAudioQuality(info)
+            }
+        }
+    }
+
+    private fun broadcastAudioQuality(info: AudioQualityInfo) {
+        audioQualityEventListeners.forEach { listener -> listener.onAudioQualityChanged(info) }
+    }
+
+    private fun currentAudioQualityInfo(uri: android.net.Uri, uriString: String): AudioQualityInfo {
+        val preferred = GeneralStorage.getPreferredAudioQuality()
+        if (uri.scheme != "orpheus" || uri.host != "bilibili") {
+            return AudioQualityInfo(preferred, AudioQualityStore.KIND_LOCAL, null, null, null, false, false)
+        }
+        if (DownloadUtil.isFullyCachedInDownloadCache(this, uriString)) {
+            return AudioQualityInfo(preferred, AudioQualityStore.KIND_LOCAL, null, null, null, false, true)
+        }
+        val cached = AudioQualityStore.get(uriString)
+        if (cached != null && cached.preferredQuality == preferred) return cached
+        return AudioQualityInfo(preferred, AudioQualityStore.KIND_UNKNOWN, null, null, null, false, false)
+    }
+
+    fun getCurrentAudioQuality(): Map<String, Any?>? {
+        val item = player?.currentMediaItem ?: return null
+        val uri = item.localConfiguration?.uri ?: return null
+        return currentAudioQualityInfo(uri, uri.toString()).toMap()
+    }
+
+    fun reloadCurrentTrackForQualityChange(): Map<String, Any> {
+        val player = player ?: return mapOf("reloaded" to false, "reason" to "no_track")
+        val item = player.currentMediaItem ?: return mapOf("reloaded" to false, "reason" to "no_track")
+        val uri = item.localConfiguration?.uri ?: return mapOf("reloaded" to false, "reason" to "not_bilibili")
+        val uriString = uri.toString()
+        if (uri.scheme != "orpheus" || uri.host != "bilibili") {
+            return mapOf("reloaded" to false, "reason" to "not_bilibili")
+        }
+        if (DownloadUtil.isFullyCachedInDownloadCache(this, uriString)) {
+            return mapOf("reloaded" to false, "reason" to "downloaded")
+        }
+        val index = player.currentMediaItemIndex
+        val position = player.currentPosition.coerceAtLeast(0L)
+        val wasPlaying = player.playWhenReady
+        val refreshedItem = MediaItem.Builder()
+            .setMediaId(item.mediaId)
+            .setUri(uri)
+            .setMediaMetadata(item.mediaMetadata)
+            .build()
+        player.replaceMediaItem(index, refreshedItem)
+        player.seekTo(index, position)
+        player.prepare()
+        if (wasPlaying) player.play()
+        return mapOf("reloaded" to true, "reason" to "reloaded")
+    }
+
+
     override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaLibrarySession? {
         return mediaSession
     }
@@ -456,6 +533,7 @@ class OrpheusMusicService : MediaLibraryService() {
         saveCurrentResumeRecord()
         floatingLyricsManager.hide()
         statusBarLyricsManager.destroy()
+        AudioQualityStore.removeListener(audioQualityStoreListener)
         instance = null
 
         mediaSession?.run {
@@ -775,6 +853,9 @@ class OrpheusMusicService : MediaLibraryService() {
                     return
                 }
                 currentMediaId = mediaId
+                mediaItem?.localConfiguration?.uri?.let { uri ->
+                    broadcastAudioQuality(currentAudioQualityInfo(uri, uri.toString()))
+                }
                 OrpheusTelemetry.onMediaItemChanged(mediaId, mediaItem?.localConfiguration?.uri?.toString())
                 // 单曲循环回到开头不算一次起播
                 if (reason != Player.MEDIA_ITEM_TRANSITION_REASON_REPEAT) {
