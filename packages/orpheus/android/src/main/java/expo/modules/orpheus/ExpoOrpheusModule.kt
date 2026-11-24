@@ -38,6 +38,7 @@ import expo.modules.orpheus.manager.CoverDownloadManager
 import expo.modules.orpheus.manager.DownloadCache
 import expo.modules.orpheus.manager.EQ_BAND_COUNT
 import expo.modules.orpheus.manager.EqualizerConfigHolder
+import expo.modules.orpheus.manager.EqualizerState
 import expo.modules.orpheus.manager.LyricsConsumer
 import expo.modules.orpheus.manager.LyriconBackend
 import expo.modules.orpheus.manager.SpectrumAnalyzer
@@ -94,6 +95,9 @@ class ExpoOrpheusModule : Module() {
     private var isAppInForeground = true
 
     private var tempBuffer: FloatArray? = null
+
+    /** EQ 的 holder 与 MMKV 是两份状态，读改写必须在同一把锁内完成 */
+    private val equalizerLock = Any()
 
     private val ioScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
 
@@ -223,39 +227,50 @@ class ExpoOrpheusModule : Module() {
         SpectrumAnalyzer.isCapturing = GeneralStorage.isSpectrumVisualizerEnabled()
     }
 
-    private fun buildEqualizerSettingsMap(): Map<String, Any?> {
-        val state = EqualizerConfigHolder.get()
-        return mapOf<String, Any?>(
-            "enabled" to state.enabled,
-            "preampDb" to state.preampDb.toDouble(),
-            "limiterEnabled" to state.limiterEnabled,
-            "gainsDb" to state.copyOfGains().map { it.toDouble() },
-            "activePresetId" to GeneralStorage.getEqualizerActivePresetId(),
-        )
-    }
+    private fun buildEqualizerSettingsMap(): Map<String, Any?> =
+        synchronized(equalizerLock) {
+            val state = EqualizerConfigHolder.get()
+            mapOf<String, Any?>(
+                "enabled" to state.enabled,
+                "preampDb" to state.preampDb.toDouble(),
+                "limiterEnabled" to state.limiterEnabled,
+                "gainsDb" to state.copyOfGains().map { it.toDouble() },
+                "activePresetId" to GeneralStorage.getEqualizerActivePresetId(),
+            )
+        }
 
     private fun toEqualizerGains(gainsDb: List<Double>): FloatArray =
         FloatArray(EQ_BAND_COUNT) { index -> gainsDb.getOrElse(index) { 0.0 }.toFloat() }
 
-    private fun applyEqualizerSettings(
-        enabled: Boolean,
-        preampDb: Float,
-        limiterEnabled: Boolean,
-        gainsDb: FloatArray,
-        activePresetId: String?,
-    ): Map<String, Any?> {
-        EqualizerConfigHolder.update(
-            enabled = enabled,
-            preampDb = preampDb,
-            limiterEnabled = limiterEnabled,
-            gainsDb = gainsDb,
-        )
-        GeneralStorage.setEqualizerEnabled(enabled)
-        GeneralStorage.setEqualizerPreampDb(preampDb)
-        GeneralStorage.setEqualizerLimiterEnabled(limiterEnabled)
-        GeneralStorage.setEqualizerGains(gainsDb)
-        GeneralStorage.setEqualizerActivePresetId(activePresetId)
-        val settings = buildEqualizerSettingsMap()
+    private class EqualizerUpdate(
+        val enabled: Boolean,
+        val preampDb: Float,
+        val limiterEnabled: Boolean,
+        val gainsDb: FloatArray,
+        val activePresetId: String?,
+    )
+
+    /**
+     * 以当前状态为基准写入一次 EQ 变更：读当前状态、更新 holder、落盘与生成快照都在锁内，
+     * 事件放到锁外，避免持锁时回到主线程
+     */
+    private fun applyEqualizerSettings(update: (EqualizerState) -> EqualizerUpdate): Map<String, Any?> {
+        val settings = synchronized(equalizerLock) {
+            val state = EqualizerConfigHolder.get()
+            val next = update(state)
+            EqualizerConfigHolder.update(
+                enabled = next.enabled,
+                preampDb = next.preampDb,
+                limiterEnabled = next.limiterEnabled,
+                gainsDb = next.gainsDb,
+            )
+            GeneralStorage.setEqualizerEnabled(next.enabled)
+            GeneralStorage.setEqualizerPreampDb(next.preampDb)
+            GeneralStorage.setEqualizerLimiterEnabled(next.limiterEnabled)
+            GeneralStorage.setEqualizerGains(next.gainsDb)
+            GeneralStorage.setEqualizerActivePresetId(next.activePresetId)
+            buildEqualizerSettingsMap()
+        }
         sendEvent("onEqualizerChanged", settings)
         return settings
     }
@@ -471,14 +486,15 @@ class ExpoOrpheusModule : Module() {
         Property("isEqualizerEnabled")
             .get { GeneralStorage.isEqualizerEnabled() }
             .set { enabled: Boolean ->
-                val state = EqualizerConfigHolder.get()
-                applyEqualizerSettings(
-                    enabled = enabled,
-                    preampDb = state.preampDb,
-                    limiterEnabled = state.limiterEnabled,
-                    gainsDb = state.copyOfGains(),
-                    activePresetId = GeneralStorage.getEqualizerActivePresetId(),
-                )
+                applyEqualizerSettings { state ->
+                    EqualizerUpdate(
+                        enabled = enabled,
+                        preampDb = state.preampDb,
+                        limiterEnabled = state.limiterEnabled,
+                        gainsDb = state.copyOfGains(),
+                        activePresetId = GeneralStorage.getEqualizerActivePresetId(),
+                    )
+                }
             }
 
         Property("isDesktopLyricsShown")
@@ -918,6 +934,7 @@ class ExpoOrpheusModule : Module() {
         AsyncFunction("downloadTrack") { track: TrackRecord ->
             val context = appContext.reactContext ?: return@AsyncFunction
             val downloadRequest = DownloadRequest.Builder(track.id, track.url.toUri())
+                .setCustomCacheKey(DownloadUtil.downloadCacheKeyOf(track.url))
                 .setData(json.encodeToString(track).toByteArray())
                 .build()
 
@@ -933,6 +950,7 @@ class ExpoOrpheusModule : Module() {
             val context = appContext.reactContext ?: return@AsyncFunction
             tracks.forEach { track ->
                 val downloadRequest = DownloadRequest.Builder(track.id, track.url.toUri())
+                    .setCustomCacheKey(DownloadUtil.downloadCacheKeyOf(track.url))
                     .setData(json.encodeToString(track).toByteArray())
                     .build()
                 DownloadService.sendAddDownload(
@@ -959,6 +977,7 @@ class ExpoOrpheusModule : Module() {
         AsyncFunction("retryDownload") { track: TrackRecord ->
             val context = appContext.reactContext ?: return@AsyncFunction
             val downloadRequest = DownloadRequest.Builder(track.id, track.url.toUri())
+                .setCustomCacheKey(DownloadUtil.downloadCacheKeyOf(track.url))
                 .setData(json.encodeToString(track).toByteArray())
                 .build()
             DownloadService.sendAddDownload(
@@ -1333,63 +1352,69 @@ class ExpoOrpheusModule : Module() {
                 limiterEnabled: Boolean,
                 gainsDb: List<Double>,
                 activePresetId: String? ->
-            applyEqualizerSettings(
-                enabled = enabled,
-                preampDb = preampDb.toFloat(),
-                limiterEnabled = limiterEnabled,
-                gainsDb = toEqualizerGains(gainsDb),
-                activePresetId = activePresetId,
-            )
-        }
-
-        AsyncFunction("setEqualizerBandGain") { bandIndex: Int, gainDb: Double ->
-            val state = EqualizerConfigHolder.get()
-            if (bandIndex !in 0 until EQ_BAND_COUNT) {
-                buildEqualizerSettingsMap()
-            } else {
-                val gains = state.copyOfGains()
-                gains[bandIndex] = gainDb.toFloat()
-                applyEqualizerSettings(
-                    enabled = state.enabled,
-                    preampDb = state.preampDb,
-                    limiterEnabled = state.limiterEnabled,
-                    gainsDb = gains,
-                    activePresetId = null,
+            applyEqualizerSettings {
+                EqualizerUpdate(
+                    enabled = enabled,
+                    preampDb = preampDb.toFloat(),
+                    limiterEnabled = limiterEnabled,
+                    gainsDb = toEqualizerGains(gainsDb),
+                    activePresetId = activePresetId,
                 )
             }
         }
 
+        AsyncFunction("setEqualizerBandGain") { bandIndex: Int, gainDb: Double ->
+            if (bandIndex !in 0 until EQ_BAND_COUNT) {
+                buildEqualizerSettingsMap()
+            } else {
+                applyEqualizerSettings { state ->
+                    val gains = state.copyOfGains()
+                    gains[bandIndex] = gainDb.toFloat()
+                    EqualizerUpdate(
+                        enabled = state.enabled,
+                        preampDb = state.preampDb,
+                        limiterEnabled = state.limiterEnabled,
+                        gainsDb = gains,
+                        activePresetId = null,
+                    )
+                }
+            }
+        }
+
         AsyncFunction("setEqualizerPreamp") { preampDb: Double ->
-            val state = EqualizerConfigHolder.get()
-            applyEqualizerSettings(
-                enabled = state.enabled,
-                preampDb = preampDb.toFloat(),
-                limiterEnabled = state.limiterEnabled,
-                gainsDb = state.copyOfGains(),
-                activePresetId = GeneralStorage.getEqualizerActivePresetId(),
-            )
+            applyEqualizerSettings { state ->
+                EqualizerUpdate(
+                    enabled = state.enabled,
+                    preampDb = preampDb.toFloat(),
+                    limiterEnabled = state.limiterEnabled,
+                    gainsDb = state.copyOfGains(),
+                    activePresetId = GeneralStorage.getEqualizerActivePresetId(),
+                )
+            }
         }
 
         AsyncFunction("setEqualizerLimiterEnabled") { enabled: Boolean ->
-            val state = EqualizerConfigHolder.get()
-            applyEqualizerSettings(
-                enabled = state.enabled,
-                preampDb = state.preampDb,
-                limiterEnabled = enabled,
-                gainsDb = state.copyOfGains(),
-                activePresetId = GeneralStorage.getEqualizerActivePresetId(),
-            )
+            applyEqualizerSettings { state ->
+                EqualizerUpdate(
+                    enabled = state.enabled,
+                    preampDb = state.preampDb,
+                    limiterEnabled = enabled,
+                    gainsDb = state.copyOfGains(),
+                    activePresetId = GeneralStorage.getEqualizerActivePresetId(),
+                )
+            }
         }
 
         AsyncFunction("resetEqualizer") {
-            val state = EqualizerConfigHolder.get()
-            applyEqualizerSettings(
-                enabled = state.enabled,
-                preampDb = 0f,
-                limiterEnabled = state.limiterEnabled,
-                gainsDb = FloatArray(EQ_BAND_COUNT),
-                activePresetId = "flat",
-            )
+            applyEqualizerSettings { state ->
+                EqualizerUpdate(
+                    enabled = state.enabled,
+                    preampDb = 0f,
+                    limiterEnabled = state.limiterEnabled,
+                    gainsDb = FloatArray(EQ_BAND_COUNT),
+                    activePresetId = "flat",
+                )
+            }
         }
 
         AsyncFunction("getCustomEqualizerPresetsJson") {
@@ -1425,7 +1450,7 @@ class ExpoOrpheusModule : Module() {
         Function("importData") { data: Map<String, Any> ->
             val playerQueue = (data["playerQueue"] as? Map<String, Any>) ?: emptyMap()
             val loudness = (data["loudness"] as? Map<String, Any>) ?: emptyMap()
-            GeneralStorage.importConfig(playerQueue)
+            synchronized(equalizerLock) { GeneralStorage.importConfig(playerQueue) }
             loudness.forEach { (key, value) ->
                 LoudnessStorage.setLoudnessData(key, (value as Number).toDouble())
             }

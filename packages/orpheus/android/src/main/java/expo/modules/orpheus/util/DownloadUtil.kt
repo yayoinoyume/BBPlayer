@@ -92,6 +92,7 @@ object DownloadUtil {
                 .setUpstreamDataSourceFactory(cacheFactory)
                 .setFlags(CacheDataSource.FLAG_IGNORE_CACHE_ON_ERROR)
                 .setCacheWriteDataSinkFactory(null)
+                .setCacheKeyFactory { dataSpec -> dataSpec.key ?: downloadCacheKeyOf(dataSpec.uri) }
 
             playerDataSourceFactory = downloadFactory
         }
@@ -99,6 +100,26 @@ object DownloadUtil {
     }
 
     fun playbackCacheKey(uriString: String): String = "$uriString|q=${GeneralStorage.getPreferredAudioQuality()}"
+
+    /**
+     * 下载缓存 key：剥掉下载定档参数 q，让下载写入、播放读取与导出命中同一条缓存；
+     * 不含 q 的 B 站 URI 原样返回，保证与既有下载缓存字节级兼容
+     */
+    fun downloadCacheKeyOf(uri: Uri): String {
+        if (uri.scheme != "orpheus" || uri.host != "bilibili") return uri.toString()
+        val parameterNames = uri.queryParameterNames
+        if (!parameterNames.contains("q")) return uri.toString()
+        val builder = uri.buildUpon().clearQuery()
+        for (name in parameterNames) {
+            if (name == "q") continue
+            for (value in uri.getQueryParameters(name)) {
+                builder.appendQueryParameter(name, value)
+            }
+        }
+        return builder.build().toString()
+    }
+
+    fun downloadCacheKeyOf(uriString: String): String = downloadCacheKeyOf(uriString.toUri())
 
     private fun buildCacheKey(dataSpec: DataSpec): String {
         val uri = dataSpec.uri
@@ -110,10 +131,11 @@ object DownloadUtil {
 
     fun isFullyCachedInDownloadCache(context: Context, uriString: String): Boolean {
         return try {
+            val cacheKey = downloadCacheKeyOf(uriString)
             val cache = DownloadCache.getStableCache(context)
-            val contentLength = ContentMetadata.getContentLength(cache.getContentMetadata(uriString))
+            val contentLength = ContentMetadata.getContentLength(cache.getContentMetadata(cacheKey))
             if (contentLength == C.LENGTH_UNSET.toLong() || contentLength <= 0L) return false
-            cache.getCachedSpans(uriString).sumOf { it.length } >= contentLength
+            cache.getCachedSpans(cacheKey).sumOf { it.length } >= contentLength
         } catch (e: Exception) {
             false
         }
@@ -246,7 +268,7 @@ object DownloadUtil {
                         .setUri(urls.first().toUri())
                         .setCustomData(BilibiliStreamUrls(urls, uri.toString().takeIf { forPlayback }))
                         .setHttpRequestHeaders(headers)
-                        .setKey(uri.toString())
+                        .setKey(if (forPlayback) uri.toString() else downloadCacheKeyOf(uri))
                         .build()
                     resolveStatus = SpanStatus.OK
                     return resolvedSpec

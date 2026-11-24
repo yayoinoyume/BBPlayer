@@ -203,9 +203,11 @@ object GeneralStorage {
     }
 
     /** 读取时把空串还原为 null，表示当前增益不属于任何预设 */
-    fun getEqualizerActivePresetId(): String? =
-        kv?.decodeString(KEY_EQUALIZER_ACTIVE_PRESET_ID, DEFAULT_EQUALIZER_ACTIVE_PRESET_ID)
-            ?.takeIf { it.isNotEmpty() }
+    fun getEqualizerActivePresetId(): String? {
+        val raw = kv?.decodeString(KEY_EQUALIZER_ACTIVE_PRESET_ID, DEFAULT_EQUALIZER_ACTIVE_PRESET_ID)
+            ?: DEFAULT_EQUALIZER_ACTIVE_PRESET_ID
+        return raw.takeIf { it.isNotBlank() }
+    }
 
     fun setEqualizerActivePresetId(presetId: String?) {
         try {
