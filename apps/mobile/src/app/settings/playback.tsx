@@ -1,8 +1,17 @@
-import { Orpheus } from '@bbplayer/orpheus'
-import { useRouter } from 'expo-router'
-import { useState } from 'react'
-import { ScrollView, StyleSheet, View } from 'react-native'
-import { Appbar, Text, useTheme } from 'react-native-paper'
+import {
+	Orpheus,
+	type AudioQualityPreference,
+} from '@bbplayer/orpheus'
+import { useFocusEffect, useRouter } from 'expo-router'
+import { useCallback, useEffect, useState } from 'react'
+import { Platform, ScrollView, StyleSheet, View } from 'react-native'
+import {
+	Appbar,
+	Icon,
+	Text,
+	TouchableRipple,
+	useTheme,
+} from 'react-native-paper'
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
 
 import { MenuView } from '@/components/common/FunctionalMenu'
@@ -10,8 +19,13 @@ import IconButton from '@/components/common/IconButton'
 import SettingsSectionTitle from '@/components/common/SettingsSectionTitle'
 import UniversalSwitch from '@/components/common/UniversalSwitch'
 import { useSettingsSplit } from '@/components/layout/SettingsNavigation'
+import {
+	formatAudioQualityLabel,
+	getAudioQualityOption,
+} from '@/constants/audioQuality'
 import useCurrentTrack from '@/hooks/player/useCurrentTrack'
 import useAppStore from '@/hooks/stores/useAppStore'
+import { useModalStore } from '@/hooks/stores/useModalStore'
 import { useMenuActions } from '@/hooks/ui/useMenuActions'
 import { toastAndLogError } from '@/utils/error-handling'
 
@@ -26,6 +40,28 @@ export default function PlaybackSettingsPage() {
 		(state) => state.settings.allowSimultaneousPlayback,
 	)
 
+	const openModal = useModalStore((state) => state.open)
+	const openedModalCount = useModalStore((state) => state.modals.length)
+	const canConfigureAudioQuality = Platform.OS === 'android'
+
+	const [audioQuality, setAudioQuality] = useState<AudioQualityPreference>(
+		() => (canConfigureAudioQuality ? Orpheus.preferredAudioQuality : 'high'),
+	)
+
+	const syncAudioQuality = useCallback(() => {
+		if (!canConfigureAudioQuality) return
+		setAudioQuality(Orpheus.preferredAudioQuality)
+	}, [canConfigureAudioQuality])
+
+	useFocusEffect(
+		useCallback(() => {
+			syncAudioQuality()
+		}, [syncAudioQuality]),
+	)
+
+	useEffect(() => {
+		syncAudioQuality()
+	}, [openedModalCount, syncAudioQuality])
 	const defaultPlayerMode = useAppStore(
 		(state) => state.settings.defaultPlayerMode,
 	)
@@ -45,6 +81,11 @@ export default function PlaybackSettingsPage() {
 	const setDefaultPlayerMode = (mode: 'music' | 'podcast') => {
 		setSettings({ defaultPlayerMode: mode })
 	}
+
+	const audioQualityLabel = formatAudioQualityLabel(audioQuality)
+
+	const audioQualityDescription =
+		getAudioQualityOption(audioQuality).description
 
 	const menuActions = useMenuActions([
 		{
@@ -90,6 +131,28 @@ export default function PlaybackSettingsPage() {
 						/>
 					</MenuView>
 				</View>
+				{canConfigureAudioQuality && (
+					<TouchableRipple
+						testID='playback-audio-quality'
+						borderless
+						style={styles.audioQualityRow}
+						onPress={() => openModal('AudioQuality', undefined)}
+					>
+						<View style={styles.audioQualityRowContent}>
+							<View style={styles.settingDescription}>
+								<Text>首选音质</Text>
+								<Text variant='bodySmall'>{audioQualityDescription}</Text>
+							</View>
+							<View style={styles.audioQualityValue}>
+								<Text variant='labelLarge'>{audioQualityLabel}</Text>
+								<Icon
+									source='chevron-right'
+									size={20}
+								/>
+							</View>
+						</View>
+					</TouchableRipple>
+				)}
 				<View style={styles.settingRow}>
 					<Text>响度均衡（实验性）</Text>
 					<UniversalSwitch
@@ -174,5 +237,23 @@ const styles = StyleSheet.create({
 		alignItems: 'center',
 		justifyContent: 'space-between',
 		marginTop: 16,
+	},
+	settingDescription: {
+		flex: 1,
+		marginEnd: 12,
+	},
+	audioQualityRow: {
+		marginTop: 16,
+		borderRadius: 16,
+	},
+	audioQualityRowContent: {
+		flexDirection: 'row',
+		alignItems: 'center',
+		justifyContent: 'space-between',
+	},
+	audioQualityValue: {
+		flexDirection: 'row',
+		alignItems: 'center',
+		gap: 2,
 	},
 })
