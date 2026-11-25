@@ -1,0 +1,254 @@
+name: Build Free Test APK
+
+on:
+  workflow_dispatch:
+    inputs:
+      buildType:
+        description: '构建类型'
+        required: true
+        default: 'preview'
+        type: choice
+        options:
+          - preview
+          - prod
+          - dev
+      runChecks:
+        description: '构建前运行依赖 / 类型 / lint 检查'
+        required: false
+        default: true
+        type: boolean
+
+jobs:
+  checks:
+    name: 🔍 前置检查
+    if: ${{ inputs.runChecks }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - name: 🏗 检出代码
+        uses: actions/checkout@v5
+
+      - name: 🟢 安装 Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: 26.x
+
+      - name: 📦 安装依赖
+        uses: pnpm/setup@v2
+        with:
+          cache: true
+          install: true
+
+      - name: 🕵️ 检查依赖版本
+        timeout-minutes: 10
+        run: |
+          START=$(date +%s)
+          timeout 600 pnpm check:deps
+          echo "check:deps 用时 $(( $(date +%s) - START ))s"
+
+      - name: 🧾 生成 Expo Router 类型
+        timeout-minutes: 10
+        run: |
+          START=$(date +%s)
+          cd apps/mobile
+          timeout 600 npx expo customize tsconfig.json
+          cd ../..
+          echo "expo customize tsconfig.json 用时 $(( $(date +%s) - START ))s"
+
+      - name: 🧠 类型检查
+        timeout-minutes: 15
+        run: |
+          START=$(date +%s)
+          timeout 900 pnpm type-check
+          echo "type-check 用时 $(( $(date +%s) - START ))s"
+
+      - name: 🚨 Lint
+        timeout-minutes: 15
+        run: |
+          START=$(date +%s)
+          timeout 900 pnpm lint
+          echo "lint 用时 $(( $(date +%s) - START ))s"
+
+  build:
+    name: 📦 构建测试 APK
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    needs: [checks]
+    if: ${{ always() && (needs.checks.result == 'success' || needs.checks.result == 'skipped') }}
+    permissions:
+      contents: read
+    env:
+      BUILD_TYPE: ${{ inputs.buildType }}
+      ABI_FILTERS: arm64-v8a
+      SENTRY_DISABLE_AUTO_UPLOAD: 'true'
+      SENTRY_ALLOW_FAILURE: 'true'
+      GRADLE_XMX: '4g'
+      KOTLIN_XMX: '2g'
+      ORG_GRADLE_WORKERS_MAX: '2'
+      ORG_GRADLE_DAEMON: 'false'
+      CI: '1'
+    steps:
+      - name: 🧹 清理 runner 上的非 Android 大文件
+        timeout-minutes: 10
+        run: |
+          START=$(date +%s)
+          timeout 300 sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/share/boost /opt/hostedtoolcache/CodeQL || true
+          timeout 120 sudo apt-get clean || true
+          df -h
+          echo "磁盘清理用时 $(( $(date +%s) - START ))s"
+
+      - name: 🏗 检出代码
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: ☕ 安装 JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: 🟢 安装 Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: 26.x
+
+      - name: 📦 安装依赖
+        uses: pnpm/setup@v2
+        with:
+          cache: true
+          install: true
+
+      - name: ♻️ 启用 Gradle 缓存
+        uses: gradle/actions/setup-gradle@v5
+        with:
+          cache-cleanup: on-success
+
+      - name: ⚙️ 复用 Gradle 缓存保留策略
+        timeout-minutes: 5
+        run: |
+          START=$(date +%s)
+          GRADLE_INIT_DIR="${GRADLE_USER_HOME:-$HOME/.gradle}/init.d"
+          if [ -f .github/gradle/cache-retention.gradle ]; then
+            mkdir -p "$GRADLE_INIT_DIR"
+            timeout 60 cp .github/gradle/cache-retention.gradle "$GRADLE_INIT_DIR/bbplayer-cache-retention.gradle"
+            echo "已复用 .github/gradle/cache-retention.gradle"
+          else
+            echo "未找到 .github/gradle/cache-retention.gradle，跳过"
+          fi
+          echo "缓存策略配置用时 $(( $(date +%s) - START ))s"
+
+      - name: 🧮 计算构建变量
+        id: vars
+        timeout-minutes: 5
+        run: |
+          START=$(date +%s)
+
+          APP_VERSION=$(node -p "require('./apps/mobile/package.json').version")
+          VERSION_CODE=$(git rev-list --count HEAD)
+
+          case "${BUILD_TYPE}" in
+            preview)
+              APP_VARIANT=preview
+              GRADLE_TASK=:app:assembleRelease
+              APK_SUBDIR=release
+              ;;
+            prod)
+              APP_VARIANT=production
+              GRADLE_TASK=:app:assembleRelease
+              APK_SUBDIR=release
+              ;;
+            dev)
+              APP_VARIANT=development
+              GRADLE_TASK=:app:assembleDebug
+              APK_SUBDIR=debug
+              ;;
+            *)
+              echo "未知构建类型: ${BUILD_TYPE}" >&2
+              exit 1
+              ;;
+          esac
+
+          APK_NAME="bbplayer-v${APP_VERSION}-${BUILD_TYPE}-arm64-v8a"
+          ARTIFACT_DIR="${RUNNER_TEMP}/${APK_NAME}"
+          mkdir -p "$ARTIFACT_DIR"
+
+          {
+            echo "APP_VARIANT=${APP_VARIANT}"
+            echo "APP_VERSION=${APP_VERSION}"
+            echo "VERSION_CODE=${VERSION_CODE}"
+            echo "GRADLE_TASK=${GRADLE_TASK}"
+            echo "APK_SUBDIR=${APK_SUBDIR}"
+            echo "APK_NAME=${APK_NAME}"
+            echo "ARTIFACT_DIR=${ARTIFACT_DIR}"
+          } >> "$GITHUB_ENV"
+
+          {
+            echo "apkName=${APK_NAME}"
+            echo "artifactDir=${ARTIFACT_DIR}"
+          } >> "$GITHUB_OUTPUT"
+
+          echo "APP_VARIANT=${APP_VARIANT} GRADLE_TASK=${GRADLE_TASK} APK_NAME=${APK_NAME} VERSION_CODE=${VERSION_CODE}"
+          echo "变量计算用时 $(( $(date +%s) - START ))s"
+
+      - name: 🧱 生成 Android 工程 (expo prebuild)
+        timeout-minutes: 30
+        run: |
+          START=$(date +%s)
+          cd apps/mobile
+          timeout 1500 npx expo prebuild --platform android --clean --no-install
+          cd ../..
+          echo "expo prebuild 用时 $(( $(date +%s) - START ))s"
+
+      - name: 🚀 Gradle 构建
+        timeout-minutes: 80
+        run: |
+          START=$(date +%s)
+          cd apps/mobile/android
+          chmod +x gradlew
+          timeout 4500 ./gradlew "$GRADLE_TASK" --no-daemon --stacktrace
+          echo "gradle 构建用时 $(( $(date +%s) - START ))s"
+
+      - name: 🔎 收集并校验 APK
+        timeout-minutes: 10
+        run: |
+          START=$(date +%s)
+          APK_DIR="apps/mobile/android/app/build/outputs/apk/${APK_SUBDIR}"
+          echo "APK 输出目录: ${APK_DIR}"
+
+          if [ ! -d "$APK_DIR" ]; then
+            echo "APK 输出目录不存在" >&2
+            exit 1
+          fi
+
+          mapfile -t SIGNED < <(find "$APK_DIR" -maxdepth 1 -type f -name '*.apk' ! -name '*unsigned*' | sort)
+          mapfile -t ALL < <(find "$APK_DIR" -maxdepth 1 -type f -name '*.apk' | sort)
+
+          if [ "${#SIGNED[@]}" -gt 0 ]; then
+            SOURCE_APK="${SIGNED[0]}"
+          elif [ "${#ALL[@]}" -gt 0 ]; then
+            SOURCE_APK="${ALL[0]}"
+            echo "::warning::未找到已签名 APK，回退使用 ${SOURCE_APK}"
+          else
+            echo "没有生成任何 APK，目录内容如下:" >&2
+            ls -laR "$APK_DIR" >&2 || true
+            exit 1
+          fi
+
+          TARGET="${ARTIFACT_DIR}/${APK_NAME}.apk"
+          timeout 120 cp "$SOURCE_APK" "$TARGET"
+
+          echo "APK: ${TARGET}"
+          ls -l "$TARGET"
+          sha256sum "$TARGET"
+          echo "产物收集用时 $(( $(date +%s) - START ))s"
+
+      - name: ⬆️ 上传 APK
+        uses: actions/upload-artifact@v5
+        with:
+          name: ${{ env.APK_NAME }}
+          path: ${{ env.ARTIFACT_DIR }}
+          if-no-files-found: error
+          retention-days: 14
