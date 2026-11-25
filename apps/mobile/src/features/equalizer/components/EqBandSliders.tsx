@@ -6,12 +6,25 @@ import {
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { AccessibilityActionEvent } from 'react-native'
 import { ScrollView, StyleSheet, View } from 'react-native'
+import AnimateableText from 'react-native-animateable-text'
 import { GestureDetector, usePanGesture } from 'react-native-gesture-handler'
 import { Text, useTheme } from 'react-native-paper'
+import Animated, {
+	cancelAnimation,
+	Easing,
+	useAnimatedProps,
+	useAnimatedStyle,
+	useSharedValue,
+	withTiming,
+	type SharedValue,
+} from 'react-native-reanimated'
+import { scheduleOnRN } from 'react-native-worklets'
 
 import * as Haptics from '@/utils/haptics'
 
 const TRACK_HEIGHT = 176
+
+const TRACK_CENTER_Y = TRACK_HEIGHT / 2
 
 const TRACK_WIDTH = 4
 
@@ -21,43 +34,51 @@ const THUMB_SIZE = 18
 
 const COLUMN_MIN_WIDTH = 32
 
-const GAIN_RANGE_DB = EQ_MAX_GAIN_DB - EQ_MIN_GAIN_DB
+const GAIN_MIN_DB = EQ_MIN_GAIN_DB
+
+const GAIN_MAX_DB = EQ_MAX_GAIN_DB
+
+const GAIN_RANGE_DB = GAIN_MAX_DB - GAIN_MIN_DB
 
 const GAIN_STEP_DB = 0.5
 
-const CHANGE_THROTTLE_MS = 50
+const NATIVE_SEND_THROTTLE_MS = 50
 
 const DOUBLE_TAP_INTERVAL_MS = 320
 
 const ACCESSIBILITY_STEP_DB = 1
 
-export interface EqBandSlidersProps {
-	gainsDb: readonly number[]
-	enabled: boolean
-	onBandChange: (index: number, gainDb: number) => void
-	onBandCommit: (index: number, gainDb: number) => void
-	onDragActiveChange: (active: boolean) => void
-}
+const SNAP_DURATION_MS = 60
+
+const RESET_DURATION_MS = 180
+
+const ACCESSIBILITY_ANIMATION_MS = 120
 
 function quantizeGainDb(gainDb: number): number {
+	'worklet'
+
 	const stepped = Math.round(gainDb / GAIN_STEP_DB) * GAIN_STEP_DB
 
-	return Math.min(EQ_MAX_GAIN_DB, Math.max(EQ_MIN_GAIN_DB, stepped))
+	return Math.min(GAIN_MAX_DB, Math.max(GAIN_MIN_DB, stepped))
 }
 
 function gainToY(gainDb: number): number {
-	return ((EQ_MAX_GAIN_DB - gainDb) / GAIN_RANGE_DB) * TRACK_HEIGHT
+	'worklet'
+
+	return ((GAIN_MAX_DB - gainDb) / GAIN_RANGE_DB) * TRACK_HEIGHT
 }
 
 function yToGain(y: number): number {
+	'worklet'
+
 	const clampedY = Math.min(Math.max(y, 0), TRACK_HEIGHT)
 
-	return quantizeGainDb(
-		EQ_MAX_GAIN_DB - (clampedY / TRACK_HEIGHT) * GAIN_RANGE_DB,
-	)
+	return GAIN_MAX_DB - (clampedY / TRACK_HEIGHT) * GAIN_RANGE_DB
 }
 
 function formatGainDb(gainDb: number): string {
+	'worklet'
+
 	const magnitude = Math.abs(gainDb).toFixed(1)
 
 	if (gainDb > 0) return `+${magnitude}`
@@ -67,11 +88,21 @@ function formatGainDb(gainDb: number): string {
 	return magnitude
 }
 
+export interface EqBandSlidersProps {
+	gainsDb: readonly number[]
+	bandGainSharedValues: readonly SharedValue<number>[]
+	enabled: boolean
+	onBandChange: (index: number, gainDb: number) => void
+	onBandCommit: (index: number, gainDb: number) => void
+	onDragActiveChange: (active: boolean) => void
+}
+
 interface BandSliderProps {
 	index: number
 	label: string
 	gainDb: number
 	enabled: boolean
+	gainSharedValue: SharedValue<number>
 	onChange: (index: number, gainDb: number) => void
 	onCommit: (index: number, gainDb: number) => void
 	onDragActiveChange: (index: number, active: boolean) => void
@@ -82,93 +113,110 @@ function BandSlider({
 	label,
 	gainDb,
 	enabled,
+	gainSharedValue,
 	onChange,
 	onCommit,
 	onDragActiveChange,
 }: BandSliderProps) {
-	const { colors } = useTheme()
+	const { colors, fonts } = useTheme()
 
-	const [displayGainDb, setDisplayGainDb] = useState(gainDb)
+	const moved = useSharedValue(false)
 
-	const draggingRef = useRef(false)
+	const lastTapAt = useSharedValue(0)
 
-	const lastEmitRef = useRef(0)
+	const lastNativeSendAt = useSharedValue(0)
 
-	const lastTapRef = useRef(0)
-
-	const movedRef = useRef(false)
-
-	useEffect(() => {
-		if (draggingRef.current) return
-
-		setDisplayGainDb(gainDb)
-	}, [gainDb])
-
-	const emitChange = useCallback(
-		(nextGainDb: number) => {
-			setDisplayGainDb(nextGainDb)
-
-			const now = Date.now()
-
-			if (now - lastEmitRef.current < CHANGE_THROTTLE_MS) return
-
-			lastEmitRef.current = now
-
-			onChange(index, nextGainDb)
-		},
-		[index, onChange],
-	)
+	const lastSentGainDb = useSharedValue(gainDb)
 
 	const panGesture = usePanGesture({
-		runOnJS: true,
 		minDistance: 0,
 		shouldCancelWhenOutside: false,
 		onBegin: (event) => {
-			draggingRef.current = true
-			movedRef.current = false
-			lastEmitRef.current = 0
-			onDragActiveChange(index, true)
+			cancelAnimation(gainSharedValue)
 
-			const nextGainDb = yToGain(event.y)
+			moved.set(false)
 
-			setDisplayGainDb(nextGainDb)
+			lastNativeSendAt.set(0)
 
-			onChange(index, nextGainDb)
+			const gain = yToGain(event.y)
+
+			gainSharedValue.set(gain)
+
+			const quantized = quantizeGainDb(gain)
+
+			lastSentGainDb.set(quantized)
+
+			scheduleOnRN(onDragActiveChange, index, true)
+
+			scheduleOnRN(onChange, index, quantized)
 		},
 		onUpdate: (event) => {
-			movedRef.current = true
+			moved.set(true)
 
-			emitChange(yToGain(event.y))
-		},
-		onFinalize: (event) => {
-			draggingRef.current = false
-			onDragActiveChange(index, false)
+			const gain = yToGain(event.y)
 
-			const finalGainDb = yToGain(event.y)
+			gainSharedValue.set(gain)
 
 			const now = Date.now()
 
-			const isTap = !movedRef.current
+			if (now - lastNativeSendAt.get() < NATIVE_SEND_THROTTLE_MS) return
 
-			if (isTap && now - lastTapRef.current <= DOUBLE_TAP_INTERVAL_MS) {
-				lastTapRef.current = 0
+			lastNativeSendAt.set(now)
 
-				setDisplayGainDb(0)
+			const quantized = quantizeGainDb(gain)
 
-				void Haptics.performHaptics(Haptics.AndroidHaptics.Context_Click)
+			if (quantized === lastSentGainDb.get()) return
 
-				onChange(index, 0)
+			lastSentGainDb.set(quantized)
 
-				onCommit(index, 0)
+			scheduleOnRN(onChange, index, quantized)
+		},
+		onFinalize: (event) => {
+			scheduleOnRN(onDragActiveChange, index, false)
+
+			const now = Date.now()
+
+			const isTap = !moved.get()
+
+			const isSecondTap =
+				isTap && now - lastTapAt.get() <= DOUBLE_TAP_INTERVAL_MS
+
+			if (isSecondTap) {
+				lastTapAt.set(0)
+
+				lastSentGainDb.set(0)
+
+				gainSharedValue.set(
+					withTiming(0, {
+						duration: RESET_DURATION_MS,
+						easing: Easing.out(Easing.cubic),
+					}),
+				)
+
+				scheduleOnRN(
+					Haptics.performHaptics,
+					Haptics.AndroidHaptics.Context_Click,
+				)
+
+				scheduleOnRN(onCommit, index, 0)
 
 				return
 			}
 
-			lastTapRef.current = isTap ? now : 0
+			lastTapAt.set(isTap ? now : 0)
 
-			setDisplayGainDb(finalGainDb)
+			const target = quantizeGainDb(yToGain(event.y))
 
-			onCommit(index, finalGainDb)
+			lastSentGainDb.set(target)
+
+			gainSharedValue.set(
+				withTiming(target, {
+					duration: SNAP_DURATION_MS,
+					easing: Easing.out(Easing.quad),
+				}),
+			)
+
+			scheduleOnRN(onCommit, index, target)
 		},
 	})
 
@@ -179,40 +227,55 @@ function BandSlider({
 					? ACCESSIBILITY_STEP_DB
 					: -ACCESSIBILITY_STEP_DB
 
-			const nextGainDb = quantizeGainDb(displayGainDb + delta)
+			const nextGainDb = quantizeGainDb(gainSharedValue.get() + delta)
 
-			setDisplayGainDb(nextGainDb)
+			gainSharedValue.set(
+				withTiming(nextGainDb, { duration: ACCESSIBILITY_ANIMATION_MS }),
+			)
 
 			onChange(index, nextGainDb)
 
 			onCommit(index, nextGainDb)
 		},
-		[displayGainDb, index, onChange, onCommit],
+		[gainSharedValue, index, onChange, onCommit],
 	)
+
+	const thumbStyle = useAnimatedStyle(() => ({
+		top: gainToY(gainSharedValue.get()) - THUMB_SIZE / 2,
+	}))
+
+	const fillStyle = useAnimatedStyle(() => {
+		const valueY = gainToY(gainSharedValue.get())
+
+		return {
+			top: Math.min(valueY, TRACK_CENTER_Y),
+			height: Math.abs(TRACK_CENTER_Y - valueY),
+		}
+	})
+
+	const valueProps = useAnimatedProps(() => ({
+		text: formatGainDb(quantizeGainDb(gainSharedValue.get())),
+	}))
 
 	const activeColor = enabled ? colors.primary : colors.outline
 
-	const centerY = TRACK_HEIGHT / 2
-
-	const valueY = gainToY(displayGainDb)
+	const valueColor = enabled ? colors.onSurface : colors.onSurfaceVariant
 
 	return (
 		<View style={styles.column}>
-			<Text
-				variant='labelSmall'
-				style={[
-					styles.valueLabel,
-					{ color: enabled ? colors.onSurface : colors.onSurfaceVariant },
-				]}
-			>
-				{formatGainDb(displayGainDb)}
-			</Text>
+			<AnimateableText
+				numberOfLines={1}
+				allowFontScaling={false}
+				text={formatGainDb(gainDb)}
+				animatedProps={valueProps}
+				style={[fonts.labelSmall, styles.valueLabel, { color: valueColor }]}
+			/>
 			<GestureDetector gesture={panGesture}>
 				<View
 					accessible
 					accessibilityRole='adjustable'
 					accessibilityLabel={`${label} 赫兹频段`}
-					accessibilityValue={{ text: `${formatGainDb(displayGainDb)} 分贝` }}
+					accessibilityValue={{ text: `${formatGainDb(gainDb)} 分贝` }}
 					accessibilityActions={[{ name: 'increment' }, { name: 'decrement' }]}
 					onAccessibilityAction={handleAccessibilityAction}
 					style={styles.trackHitArea}
@@ -220,21 +283,11 @@ function BandSlider({
 					<View
 						style={[styles.track, { backgroundColor: colors.surfaceVariant }]}
 					/>
-					<View
-						style={[
-							styles.fill,
-							{
-								top: Math.min(valueY, centerY),
-								height: Math.abs(centerY - valueY),
-								backgroundColor: activeColor,
-							},
-						]}
+					<Animated.View
+						style={[styles.fill, { backgroundColor: activeColor }, fillStyle]}
 					/>
-					<View
-						style={[
-							styles.thumb,
-							{ top: valueY - THUMB_SIZE / 2, backgroundColor: activeColor },
-						]}
+					<Animated.View
+						style={[styles.thumb, { backgroundColor: activeColor }, thumbStyle]}
 					/>
 				</View>
 			</GestureDetector>
@@ -250,6 +303,7 @@ function BandSlider({
 
 export default function EqBandSliders({
 	gainsDb,
+	bandGainSharedValues,
 	enabled,
 	onBandChange,
 	onBandCommit,
@@ -304,6 +358,7 @@ export default function EqBandSliders({
 					label={label}
 					gainDb={gainsDb[index] ?? 0}
 					enabled={enabled}
+					gainSharedValue={bandGainSharedValues[index]}
 					onChange={onBandChange}
 					onCommit={onBandCommit}
 					onDragActiveChange={handleDragActiveChange}

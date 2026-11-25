@@ -1,30 +1,26 @@
 import {
-	EQ_DEFAULT_SAMPLE_RATE,
-	computeEqFrequencyResponse,
-	generateLogFrequencyPoints,
-} from '@bbplayer/orpheus'
-import { useCallback, useMemo, useState } from 'react'
+	Canvas,
+	LinearGradient,
+	Path,
+	Skia,
+	vec,
+} from '@shopify/react-native-skia'
+import Color from 'color'
+import { memo, useCallback, useMemo, useState } from 'react'
 import type { LayoutChangeEvent } from 'react-native'
 import { StyleSheet, View } from 'react-native'
 import { useTheme } from 'react-native-paper'
-import Svg, {
-	Defs,
-	Line,
-	LinearGradient,
-	Path,
-	Stop,
-	Text as SvgText,
-} from 'react-native-svg'
+import { useDerivedValue, type SharedValue } from 'react-native-reanimated'
+import Svg, { Line, Text as SvgText } from 'react-native-svg'
+
+import {
+	EQ_CURVE_TABLE,
+	evaluateEqResponseWorklet,
+} from '@/features/equalizer/utils/eqCurveMath'
 
 const CURVE_HEIGHT = 176
 
-const CURVE_POINT_COUNT = 128
-
 const CURVE_RANGE_DB = 18
-
-const MIN_FREQUENCY_HZ = 20
-
-const MAX_FREQUENCY_HZ = 20000
 
 const CHART_PADDING_LEFT = 26
 
@@ -44,60 +40,117 @@ const FREQUENCY_MARKS = [
 	{ hz: 10000, label: '10k' },
 ] as const
 
-const FREQUENCY_POINTS = generateLogFrequencyPoints(CURVE_POINT_COUNT)
+const MIN_FREQUENCY_HZ = 20
 
-interface CurvePoint {
-	x: number
-	y: number
-}
+const MAX_FREQUENCY_HZ = 20000
 
-export interface EqResponseCurveProps {
-	gainsDb: readonly number[]
-	preampDb: number
-	enabled: boolean
-}
+const FREQUENCY_RANGE = Math.log(MAX_FREQUENCY_HZ / MIN_FREQUENCY_HZ)
 
 function frequencyToRatio(frequency: number): number {
-	const ratio =
-		Math.log(frequency / MIN_FREQUENCY_HZ) /
-		Math.log(MAX_FREQUENCY_HZ / MIN_FREQUENCY_HZ)
+	const ratio = Math.log(frequency / MIN_FREQUENCY_HZ) / FREQUENCY_RANGE
 
 	return Math.min(Math.max(ratio, 0), 1)
 }
 
-function buildSmoothPath(points: readonly CurvePoint[]): string {
-	const first = points[0]
+function clampCurveDb(value: number): number {
+	'worklet'
 
-	if (!first) return ''
+	if (!Number.isFinite(value)) return 0
 
-	let path = `M ${first.x.toFixed(2)} ${first.y.toFixed(2)}`
+	return Math.min(Math.max(value, -CURVE_RANGE_DB), CURVE_RANGE_DB)
+}
 
-	for (let index = 1; index < points.length - 1; index += 1) {
-		const point = points[index]
+interface StaticChartProps {
+	width: number
+	chartWidth: number
+	gridColor: string
+	zeroLineColor: string
+	labelColor: string
+}
 
-		const next = points[index + 1]
+const StaticChart = memo(function StaticChart({
+	width,
+	chartWidth,
+	gridColor,
+	zeroLineColor,
+	labelColor,
+}: StaticChartProps) {
+	const chartHeight = CURVE_HEIGHT - CHART_PADDING_TOP - CHART_PADDING_BOTTOM
 
-		if (!point || !next) continue
+	const centerY = CHART_PADDING_TOP + chartHeight / 2
 
-		const midX = (point.x + next.x) / 2
+	const scale = chartHeight / 2 / CURVE_RANGE_DB
 
-		const midY = (point.y + next.y) / 2
+	const yForLevel = (levelDb: number) => centerY - levelDb * scale
 
-		path += ` Q ${point.x.toFixed(2)} ${point.y.toFixed(2)} ${midX.toFixed(2)} ${midY.toFixed(2)}`
-	}
+	return (
+		<Svg
+			width={width}
+			height={CURVE_HEIGHT}
+		>
+			{GRID_LEVELS_DB.map((levelDb) => (
+				<Line
+					key={`grid-${levelDb}`}
+					x1={CHART_PADDING_LEFT}
+					x2={CHART_PADDING_LEFT + chartWidth}
+					y1={yForLevel(levelDb)}
+					y2={yForLevel(levelDb)}
+					stroke={levelDb === 0 ? zeroLineColor : gridColor}
+					strokeWidth={1}
+					strokeDasharray={levelDb === 0 ? undefined : '4 6'}
+					opacity={levelDb === 0 ? 0.9 : 0.6}
+				/>
+			))}
+			{FREQUENCY_MARKS.map((mark) => (
+				<Line
+					key={`mark-${mark.hz}`}
+					x1={CHART_PADDING_LEFT + frequencyToRatio(mark.hz) * chartWidth}
+					x2={CHART_PADDING_LEFT + frequencyToRatio(mark.hz) * chartWidth}
+					y1={CHART_PADDING_TOP}
+					y2={CHART_PADDING_TOP + chartHeight}
+					stroke={gridColor}
+					strokeWidth={1}
+					strokeDasharray='2 8'
+					opacity={0.5}
+				/>
+			))}
+			{AXIS_LABELS_DB.map((levelDb) => (
+				<SvgText
+					key={`axis-${levelDb}`}
+					x={CHART_PADDING_LEFT - 6}
+					y={yForLevel(levelDb) + 3}
+					fill={labelColor}
+					fontSize={9}
+					textAnchor='end'
+				>
+					{levelDb > 0 ? `+${levelDb}` : `${levelDb}`}
+				</SvgText>
+			))}
+			{FREQUENCY_MARKS.map((mark) => (
+				<SvgText
+					key={`label-${mark.hz}`}
+					x={CHART_PADDING_LEFT + frequencyToRatio(mark.hz) * chartWidth}
+					y={CURVE_HEIGHT - 6}
+					fill={labelColor}
+					fontSize={9}
+					textAnchor='middle'
+				>
+					{mark.label}
+				</SvgText>
+			))}
+		</Svg>
+	)
+})
 
-	const last = points[points.length - 1]
-
-	if (last && points.length > 1) {
-		path += ` L ${last.x.toFixed(2)} ${last.y.toFixed(2)}`
-	}
-
-	return path
+export interface EqResponseCurveProps {
+	bandGainSharedValues: readonly SharedValue<number>[]
+	preampSharedValue: SharedValue<number>
+	enabled: boolean
 }
 
 export default function EqResponseCurve({
-	gainsDb,
-	preampDb,
+	bandGainSharedValues,
+	preampSharedValue,
 	enabled,
 }: EqResponseCurveProps) {
 	const { colors } = useTheme()
@@ -117,151 +170,141 @@ export default function EqResponseCurve({
 
 	const chartHeight = CURVE_HEIGHT - CHART_PADDING_TOP - CHART_PADDING_BOTTOM
 
-	const geometry = useMemo(() => {
-		if (chartWidth <= 0 || chartHeight <= 0) return null
+	const centerY = CHART_PADDING_TOP + chartHeight / 2
 
-		const response = computeEqFrequencyResponse(
-			gainsDb,
-			preampDb,
-			EQ_DEFAULT_SAMPLE_RATE,
-			FREQUENCY_POINTS,
-		)
+	const scale = chartHeight / 2 / CURVE_RANGE_DB
 
-		const centerY = CHART_PADDING_TOP + chartHeight / 2
+	const xRatios = EQ_CURVE_TABLE.xRatios
 
-		const scale = chartHeight / 2 / CURVE_RANGE_DB
+	const pointXs = useMemo(
+		() => xRatios.map((ratio) => CHART_PADDING_LEFT + ratio * chartWidth),
+		[chartWidth, xRatios],
+	)
 
-		const points: CurvePoint[] = response.map((gainDb, index) => {
-			const frequency = FREQUENCY_POINTS[index] ?? MIN_FREQUENCY_HZ
+	const responseDb = useDerivedValue(
+		() =>
+			evaluateEqResponseWorklet(
+				bandGainSharedValues.map((sharedGain) => sharedGain.get()),
+				preampSharedValue.get(),
+				EQ_CURVE_TABLE,
+			),
+		[bandGainSharedValues, preampSharedValue],
+	)
 
-			const clamped = Math.min(
-				Math.max(gainDb, -CURVE_RANGE_DB),
-				CURVE_RANGE_DB,
-			)
+	const linePath = useDerivedValue(() => {
+		const response = responseDb.get()
 
-			return {
-				x: CHART_PADDING_LEFT + frequencyToRatio(frequency) * chartWidth,
-				y: centerY - clamped * scale,
-			}
-		})
+		const builder = Skia.PathBuilder.Make()
 
-		const linePath = buildSmoothPath(points)
+		const pointCount = pointXs.length
 
-		const first = points[0]
+		if (pointCount === 0) return builder.build()
 
-		const last = points[points.length - 1]
+		builder.moveTo(pointXs[0], centerY - clampCurveDb(response[0]) * scale)
 
-		const fillPath =
-			first && last
-				? `${linePath} L ${last.x.toFixed(2)} ${centerY.toFixed(2)} L ${first.x.toFixed(2)} ${centerY.toFixed(2)} Z`
-				: ''
+		for (let index = 1; index < pointCount - 1; index += 1) {
+			const x = pointXs[index]
 
-		return {
-			centerY,
-			linePath,
-			fillPath,
-			yForLevel: (levelDb: number) => centerY - levelDb * scale,
+			const y = centerY - clampCurveDb(response[index]) * scale
+
+			const nextX = pointXs[index + 1]
+
+			const nextY = centerY - clampCurveDb(response[index + 1]) * scale
+
+			builder.quadTo(x, y, (x + nextX) / 2, (y + nextY) / 2)
 		}
-	}, [chartHeight, chartWidth, gainsDb, preampDb])
+
+		if (pointCount > 1) {
+			const lastIndex = pointCount - 1
+
+			builder.lineTo(
+				pointXs[lastIndex],
+				centerY - clampCurveDb(response[lastIndex]) * scale,
+			)
+		}
+
+		return builder.build()
+	}, [centerY, pointXs, responseDb, scale])
+
+	const fillPath = useDerivedValue(() => {
+		const builder = Skia.PathBuilder.MakeFromPath(linePath.get())
+
+		const pointCount = pointXs.length
+
+		if (pointCount > 0) {
+			builder.lineTo(pointXs[pointCount - 1], centerY)
+
+			builder.lineTo(pointXs[0], centerY)
+
+			builder.close()
+		}
+
+		return builder.build()
+	}, [centerY, linePath, pointXs])
 
 	const strokeColor = enabled ? colors.primary : colors.outline
 
-	const labelColor = colors.onSurfaceVariant
+	const fillTopColor = useMemo(
+		() =>
+			Color(strokeColor)
+				.alpha(enabled ? 0.32 : 0.12)
+				.string(),
+		[enabled, strokeColor],
+	)
+
+	const fillBottomColor = useMemo(
+		() => Color(strokeColor).alpha(0).string(),
+		[strokeColor],
+	)
+
+	const gradientStart = useMemo(() => vec(0, CHART_PADDING_TOP), [])
+
+	const gradientEnd = useMemo(
+		() => vec(0, CHART_PADDING_TOP + chartHeight),
+		[chartHeight],
+	)
+
+	const hasChart = chartWidth > 0
 
 	return (
 		<View
 			style={styles.container}
 			onLayout={handleLayout}
 		>
-			{geometry ? (
-				<Svg
-					width={width}
-					height={CURVE_HEIGHT}
-				>
-					<Defs>
-						<LinearGradient
-							id='eqResponseFill'
-							x1='0'
-							y1='0'
-							x2='0'
-							y2='1'
-						>
-							<Stop
-								offset='0'
-								stopColor={strokeColor}
-								stopOpacity={enabled ? 0.32 : 0.12}
-							/>
-							<Stop
-								offset='1'
-								stopColor={strokeColor}
-								stopOpacity={0}
-							/>
-						</LinearGradient>
-					</Defs>
-					{GRID_LEVELS_DB.map((levelDb) => (
-						<Line
-							key={`grid-${levelDb}`}
-							x1={CHART_PADDING_LEFT}
-							x2={CHART_PADDING_LEFT + chartWidth}
-							y1={geometry.yForLevel(levelDb)}
-							y2={geometry.yForLevel(levelDb)}
-							stroke={levelDb === 0 ? colors.outline : colors.outlineVariant}
-							strokeWidth={1}
-							strokeDasharray={levelDb === 0 ? undefined : '4 6'}
-							opacity={levelDb === 0 ? 0.9 : 0.6}
-						/>
-					))}
-					{FREQUENCY_MARKS.map((mark) => (
-						<Line
-							key={`mark-${mark.hz}`}
-							x1={CHART_PADDING_LEFT + frequencyToRatio(mark.hz) * chartWidth}
-							x2={CHART_PADDING_LEFT + frequencyToRatio(mark.hz) * chartWidth}
-							y1={CHART_PADDING_TOP}
-							y2={CHART_PADDING_TOP + chartHeight}
-							stroke={colors.outlineVariant}
-							strokeWidth={1}
-							strokeDasharray='2 8'
-							opacity={0.5}
-						/>
-					))}
-					<Path
-						d={geometry.fillPath}
-						fill='url(#eqResponseFill)'
+			{hasChart ? (
+				<>
+					<StaticChart
+						width={width}
+						chartWidth={chartWidth}
+						gridColor={colors.outlineVariant}
+						zeroLineColor={colors.outline}
+						labelColor={colors.onSurfaceVariant}
 					/>
-					<Path
-						d={geometry.linePath}
-						fill='none'
-						stroke={strokeColor}
-						strokeWidth={enabled ? 2.5 : 1.5}
-						strokeLinecap='round'
-						strokeLinejoin='round'
-						opacity={enabled ? 1 : 0.7}
-					/>
-					{AXIS_LABELS_DB.map((levelDb) => (
-						<SvgText
-							key={`axis-${levelDb}`}
-							x={CHART_PADDING_LEFT - 6}
-							y={geometry.yForLevel(levelDb) + 3}
-							fill={labelColor}
-							fontSize={9}
-							textAnchor='end'
+					<Canvas
+						pointerEvents='none'
+						style={StyleSheet.absoluteFill}
+					>
+						<Path
+							path={fillPath}
+							style='fill'
 						>
-							{levelDb > 0 ? `+${levelDb}` : `${levelDb}`}
-						</SvgText>
-					))}
-					{FREQUENCY_MARKS.map((mark) => (
-						<SvgText
-							key={`label-${mark.hz}`}
-							x={CHART_PADDING_LEFT + frequencyToRatio(mark.hz) * chartWidth}
-							y={CURVE_HEIGHT - 6}
-							fill={labelColor}
-							fontSize={9}
-							textAnchor='middle'
-						>
-							{mark.label}
-						</SvgText>
-					))}
-				</Svg>
+							<LinearGradient
+								start={gradientStart}
+								end={gradientEnd}
+								colors={[fillTopColor, fillBottomColor]}
+							/>
+						</Path>
+						<Path
+							path={linePath}
+							style='stroke'
+							strokeWidth={enabled ? 2.5 : 1.5}
+							strokeCap='round'
+							strokeJoin='round'
+							color={strokeColor}
+							opacity={enabled ? 1 : 0.7}
+						/>
+					</Canvas>
+				</>
 			) : (
 				<View style={styles.placeholder} />
 			)}

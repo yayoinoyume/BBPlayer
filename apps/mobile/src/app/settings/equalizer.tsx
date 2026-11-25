@@ -8,7 +8,7 @@ import {
 } from '@bbplayer/orpheus'
 import { Host, Slider } from '@expo/ui/jetpack-compose'
 import { useRouter } from 'expo-router'
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Platform, ScrollView, StyleSheet, View } from 'react-native'
 import {
 	ActivityIndicator,
@@ -17,6 +17,7 @@ import {
 	Text,
 	useTheme,
 } from 'react-native-paper'
+import { Easing, useSharedValue, withTiming } from 'react-native-reanimated'
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
 
 import IconButton from '@/components/common/IconButton'
@@ -50,6 +51,10 @@ const INITIAL_SETTINGS: EqualizerSettings = {
 const PREAMP_STEP_DB = 0.5
 
 const PREAMP_THROTTLE_MS = 50
+
+const PRESET_TRANSITION_MS = 260
+
+const VISUAL_TOLERANCE_DB = 1e-3
 
 const PREAMP_STEPS =
 	Math.round((EQ_MAX_GAIN_DB - EQ_MIN_GAIN_DB) / PREAMP_STEP_DB) - 1
@@ -271,6 +276,130 @@ export default function EqualizerSettingsPage() {
 
 	const bandErrorRef = useRef(false)
 
+	const bandGain0 = useSharedValue(0)
+
+	const bandGain1 = useSharedValue(0)
+
+	const bandGain2 = useSharedValue(0)
+
+	const bandGain3 = useSharedValue(0)
+
+	const bandGain4 = useSharedValue(0)
+
+	const bandGain5 = useSharedValue(0)
+
+	const bandGain6 = useSharedValue(0)
+
+	const bandGain7 = useSharedValue(0)
+
+	const bandGain8 = useSharedValue(0)
+
+	const bandGain9 = useSharedValue(0)
+
+	const preampSharedValue = useSharedValue(0)
+
+	const bandGainSharedValues = useMemo(
+		() => [
+			bandGain0,
+			bandGain1,
+			bandGain2,
+			bandGain3,
+			bandGain4,
+			bandGain5,
+			bandGain6,
+			bandGain7,
+			bandGain8,
+			bandGain9,
+		],
+		[
+			bandGain0,
+			bandGain1,
+			bandGain2,
+			bandGain3,
+			bandGain4,
+			bandGain5,
+			bandGain6,
+			bandGain7,
+			bandGain8,
+			bandGain9,
+		],
+	)
+
+	const lastVisualTargetRef = useRef({
+		gainsDb: [...FLAT_GAINS],
+		preampDb: 0,
+	})
+
+	const hasHydratedRef = useRef(false)
+
+	const pushVisualTarget = useCallback(
+		(gainsDb: readonly number[], preampDb: number, animate: boolean) => {
+			const target = lastVisualTargetRef.current
+
+			const nextGains: number[] = []
+
+			for (let index = 0; index < bandGainSharedValues.length; index += 1) {
+				const sharedGain = bandGainSharedValues[index]
+
+				const gain = gainsDb[index] ?? 0
+
+				sharedGain.set(
+					animate
+						? withTiming(gain, {
+								duration: PRESET_TRANSITION_MS,
+								easing: Easing.out(Easing.cubic),
+							})
+						: gain,
+				)
+
+				nextGains.push(gain)
+			}
+
+			target.gainsDb = nextGains
+
+			target.preampDb = preampDb
+
+			preampSharedValue.set(
+				animate
+					? withTiming(preampDb, {
+							duration: PRESET_TRANSITION_MS,
+							easing: Easing.out(Easing.cubic),
+						})
+					: preampDb,
+			)
+		},
+		[bandGainSharedValues, preampSharedValue],
+	)
+
+	const matchesVisualTarget = useCallback((next: EqualizerSettings) => {
+		const target = lastVisualTargetRef.current
+
+		if (Math.abs(next.preampDb - target.preampDb) > VISUAL_TOLERANCE_DB) {
+			return false
+		}
+
+		for (let index = 0; index < target.gainsDb.length; index += 1) {
+			const nextGain = next.gainsDb[index] ?? 0
+
+			const currentGain = target.gainsDb[index] ?? 0
+
+			if (Math.abs(nextGain - currentGain) > VISUAL_TOLERANCE_DB) return false
+		}
+
+		return true
+	}, [])
+
+	const applySettledSettings = useCallback(
+		(next: EqualizerSettings) => {
+			setSettings(next)
+
+			if (matchesVisualTarget(next)) return
+
+			pushVisualTarget(next.gainsDb, next.preampDb, hasHydratedRef.current)
+		},
+		[matchesVisualTarget, pushVisualTarget],
+	)
+
 	useEffect(() => {
 		if (!isAndroid) return
 
@@ -286,6 +415,12 @@ export default function EqualizerSettingsPage() {
 
 			if (settingsResult.status === 'fulfilled') {
 				setSettings(settingsResult.value)
+
+				pushVisualTarget(
+					settingsResult.value.gainsDb,
+					settingsResult.value.preampDb,
+					false,
+				)
 			} else {
 				toastAndLogError(
 					'读取均衡器设置失败',
@@ -304,13 +439,15 @@ export default function EqualizerSettingsPage() {
 				)
 			}
 
+			hasHydratedRef.current = true
+
 			setLoading(false)
 		})()
 
 		return () => {
 			cancelled = true
 		}
-	}, [isAndroid])
+	}, [isAndroid, pushVisualTarget])
 
 	useEffect(() => {
 		if (!isAndroid) return
@@ -318,13 +455,13 @@ export default function EqualizerSettingsPage() {
 		const subscription = Orpheus.addListener('onEqualizerChanged', (next) => {
 			if (draggingRef.current) return
 
-			setSettings(next)
+			applySettledSettings(next)
 		})
 
 		return () => {
 			subscription.remove()
 		}
-	}, [isAndroid])
+	}, [applySettledSettings, isAndroid])
 
 	const runEqualizerAction = useCallback(
 		async (
@@ -334,12 +471,12 @@ export default function EqualizerSettingsPage() {
 			try {
 				const next = await action()
 
-				setSettings(next)
+				applySettledSettings(next)
 			} catch (error) {
 				toastAndLogError(failureMessage, error, 'Equalizer')
 			}
 		},
-		[],
+		[applySettledSettings],
 	)
 
 	const persistCustomPresets = useCallback(
@@ -368,6 +505,8 @@ export default function EqualizerSettingsPage() {
 				preampDb: preset.preampDb,
 			})
 
+			pushVisualTarget(preset.gainsDb, preset.preampDb, true)
+
 			if (!isAndroid) return
 
 			void runEqualizerAction(
@@ -382,7 +521,7 @@ export default function EqualizerSettingsPage() {
 				'应用均衡器预设失败',
 			)
 		},
-		[isAndroid, runEqualizerAction],
+		[isAndroid, pushVisualTarget, runEqualizerAction],
 	)
 
 	const handleToggleEnabled = useCallback(() => {
@@ -413,18 +552,26 @@ export default function EqualizerSettingsPage() {
 	const handleReset = useCallback(() => {
 		if (!isAndroid) return
 
+		const previousGains = [...lastVisualTargetRef.current.gainsDb]
+
+		const previousPreamp = lastVisualTargetRef.current.preampDb
+
+		pushVisualTarget(FLAT_GAINS, 0, true)
+
 		void (async () => {
 			try {
 				const next = await Orpheus.resetEqualizer()
 
-				setSettings(next)
+				applySettledSettings(next)
 
 				toast.success('已恢复平坦响应')
 			} catch (error) {
+				pushVisualTarget(previousGains, previousPreamp, true)
+
 				toastAndLogError('重置均衡器失败', error, 'Equalizer')
 			}
 		})()
-	}, [isAndroid])
+	}, [applySettledSettings, isAndroid, pushVisualTarget])
 
 	const handleSelectPreset = useCallback(
 		(preset: EqualizerPreset) => {
@@ -433,19 +580,15 @@ export default function EqualizerSettingsPage() {
 		[applyPreset, settings],
 	)
 
-	const updateBandGain = useCallback((bandIndex: number, gainDb: number) => {
-		setSettings((previous) => {
-			const gainsDb = [...previous.gainsDb]
-
-			gainsDb[bandIndex] = gainDb
-
-			return { ...previous, gainsDb, activePresetId: null }
-		})
-	}, [])
-
 	const handleBandChange = useCallback(
 		(bandIndex: number, gainDb: number) => {
-			updateBandGain(bandIndex, gainDb)
+			lastVisualTargetRef.current.gainsDb[bandIndex] = gainDb
+
+			setSettings((previous) =>
+				previous.activePresetId === null
+					? previous
+					: { ...previous, activePresetId: null },
+			)
 
 			if (!isAndroid || bandErrorRef.current) return
 
@@ -459,14 +602,22 @@ export default function EqualizerSettingsPage() {
 				}
 			})()
 		},
-		[isAndroid, updateBandGain],
+		[isAndroid],
 	)
 
 	const handleBandCommit = useCallback(
 		(bandIndex: number, gainDb: number) => {
 			bandErrorRef.current = false
 
-			updateBandGain(bandIndex, gainDb)
+			lastVisualTargetRef.current.gainsDb[bandIndex] = gainDb
+
+			setSettings((previous) => {
+				const gainsDb = [...previous.gainsDb]
+
+				gainsDb[bandIndex] = gainDb
+
+				return { ...previous, gainsDb, activePresetId: null }
+			})
 
 			if (!isAndroid) return
 
@@ -475,12 +626,14 @@ export default function EqualizerSettingsPage() {
 				'保存均衡器设置失败',
 			)
 		},
-		[isAndroid, runEqualizerAction, updateBandGain],
+		[isAndroid, runEqualizerAction],
 	)
 
 	const handlePreampChange = useCallback(
 		(preampDb: number) => {
-			setSettings((previous) => ({ ...previous, preampDb }))
+			lastVisualTargetRef.current.preampDb = preampDb
+
+			preampSharedValue.set(preampDb)
 
 			if (!isAndroid) return
 
@@ -492,11 +645,17 @@ export default function EqualizerSettingsPage() {
 				}
 			})()
 		},
-		[isAndroid],
+		[isAndroid, preampSharedValue],
 	)
 
 	const handlePreampCommit = useCallback(
 		(preampDb: number) => {
+			lastVisualTargetRef.current.preampDb = preampDb
+
+			preampSharedValue.set(preampDb)
+
+			setSettings((previous) => ({ ...previous, preampDb }))
+
 			if (!isAndroid) return
 
 			void runEqualizerAction(
@@ -504,7 +663,7 @@ export default function EqualizerSettingsPage() {
 				'保存前置增益失败',
 			)
 		},
-		[isAndroid, runEqualizerAction],
+		[isAndroid, preampSharedValue, runEqualizerAction],
 	)
 
 	const handleDragActiveChange = useCallback((active: boolean) => {
@@ -677,8 +836,8 @@ export default function EqualizerSettingsPage() {
 					>
 						<EqResponseCurve
 							enabled={settings.enabled}
-							gainsDb={settings.gainsDb}
-							preampDb={settings.preampDb}
+							bandGainSharedValues={bandGainSharedValues}
+							preampSharedValue={preampSharedValue}
 						/>
 					</Surface>
 					<SettingsSectionTitle title='预设' />
@@ -695,6 +854,7 @@ export default function EqualizerSettingsPage() {
 					<SettingsSectionTitle title='频段' />
 					<EqBandSliders
 						gainsDb={settings.gainsDb}
+						bandGainSharedValues={bandGainSharedValues}
 						enabled={settings.enabled}
 						onBandChange={handleBandChange}
 						onBandCommit={handleBandCommit}
