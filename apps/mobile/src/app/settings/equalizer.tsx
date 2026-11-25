@@ -6,11 +6,10 @@ import {
 	type EqualizerPreset,
 	type EqualizerSettings,
 } from '@bbplayer/orpheus'
+import { Host, Slider } from '@expo/ui/jetpack-compose'
 import { useRouter } from 'expo-router'
 import { useCallback, useEffect, useRef, useState } from 'react'
-import type { AccessibilityActionEvent, LayoutChangeEvent } from 'react-native'
 import { Platform, ScrollView, StyleSheet, View } from 'react-native'
-import { GestureDetector, usePanGesture } from 'react-native-gesture-handler'
 import {
 	ActivityIndicator,
 	Appbar,
@@ -48,17 +47,12 @@ const INITIAL_SETTINGS: EqualizerSettings = {
 	activePresetId: 'flat',
 }
 
-const PREAMP_TRACK_HEIGHT = 40
-
-const PREAMP_TRACK_THICKNESS = 4
-
-const PREAMP_THUMB_SIZE = 18
-
 const PREAMP_STEP_DB = 0.5
 
 const PREAMP_THROTTLE_MS = 50
 
-const PREAMP_RANGE_DB = EQ_MAX_GAIN_DB - EQ_MIN_GAIN_DB
+const PREAMP_STEPS =
+	Math.round((EQ_MAX_GAIN_DB - EQ_MIN_GAIN_DB) / PREAMP_STEP_DB) - 1
 
 function quantizePreampDb(preampDb: number): number {
 	const stepped = Math.round(preampDb / PREAMP_STEP_DB) * PREAMP_STEP_DB
@@ -95,32 +89,51 @@ function PreampControl({
 
 	const [displayValue, setDisplayValue] = useState(value)
 
-	const [trackWidth, setTrackWidth] = useState(0)
+	const latestValueRef = useRef(value)
 
 	const draggingRef = useRef(false)
 
 	const lastEmitRef = useRef(0)
 
 	useEffect(() => {
-		if (draggingRef.current) return
+		latestValueRef.current = value
 
 		setDisplayValue(value)
 	}, [value])
 
-	const valueFromX = useCallback(
-		(x: number) => {
-			if (trackWidth <= 0) return value
+	const releaseDrag = useCallback(() => {
+		if (!draggingRef.current) return
 
-			const ratio = Math.min(Math.max(x / trackWidth, 0), 1)
+		draggingRef.current = false
 
-			return quantizePreampDb(EQ_MIN_GAIN_DB + ratio * PREAMP_RANGE_DB)
-		},
-		[trackWidth, value],
-	)
+		lastEmitRef.current = 0
 
-	const emitChange = useCallback(
+		onDragActiveChange(false)
+	}, [onDragActiveChange])
+
+	useEffect(() => {
+		if (enabled) return
+
+		releaseDrag()
+	}, [enabled, releaseDrag])
+
+	useEffect(() => releaseDrag, [releaseDrag])
+
+	const handleValueChange = useCallback(
 		(nextValue: number) => {
-			setDisplayValue(nextValue)
+			const quantized = quantizePreampDb(nextValue)
+
+			latestValueRef.current = quantized
+
+			setDisplayValue(quantized)
+
+			if (!draggingRef.current) {
+				draggingRef.current = true
+
+				lastEmitRef.current = 0
+
+				onDragActiveChange(true)
+			}
 
 			const now = Date.now()
 
@@ -128,80 +141,41 @@ function PreampControl({
 
 			lastEmitRef.current = now
 
-			onChange(nextValue)
+			onChange(quantized)
 		},
-		[onChange],
+		[onChange, onDragActiveChange],
 	)
 
-	const panGesture = usePanGesture({
-		runOnJS: true,
-		minDistance: 0,
-		shouldCancelWhenOutside: false,
-		onBegin: (event) => {
-			draggingRef.current = true
-			lastEmitRef.current = 0
-			onDragActiveChange(true)
+	const handleValueChangeFinished = useCallback(() => {
+		const finalValue = quantizePreampDb(latestValueRef.current)
 
-			const nextValue = valueFromX(event.x)
+		latestValueRef.current = finalValue
 
-			setDisplayValue(nextValue)
+		setDisplayValue(finalValue)
 
-			onChange(nextValue)
-		},
-		onUpdate: (event) => {
-			emitChange(valueFromX(event.x))
-		},
-		onFinalize: (event) => {
-			draggingRef.current = false
+		releaseDrag()
 
-			const nextValue = valueFromX(event.x)
-
-			setDisplayValue(nextValue)
-
-			onCommit(nextValue)
-
-			onDragActiveChange(false)
-		},
-	})
+		onCommit(finalValue)
+	}, [onCommit, releaseDrag])
 
 	const handleReset = useCallback(() => {
+		latestValueRef.current = 0
+
 		setDisplayValue(0)
+
 		onChange(0)
+
 		onCommit(0)
 	}, [onChange, onCommit])
 
-	const handleAccessibilityAction = useCallback(
-		(event: AccessibilityActionEvent) => {
-			const delta =
-				event.nativeEvent.actionName === 'increment'
-					? PREAMP_STEP_DB
-					: -PREAMP_STEP_DB
-
-			const nextValue = quantizePreampDb(displayValue + delta)
-
-			setDisplayValue(nextValue)
-
-			onChange(nextValue)
-
-			onCommit(nextValue)
-		},
-		[displayValue, onChange, onCommit],
-	)
-
-	const handleTrackLayout = useCallback((event: LayoutChangeEvent) => {
-		const nextWidth = event.nativeEvent.layout.width
-
-		setTrackWidth((previous) => (previous === nextWidth ? previous : nextWidth))
-	}, [])
+	const isAndroid = Platform.OS === 'android'
 
 	const activeColor = enabled ? colors.primary : colors.outline
 
-	const centerX = trackWidth / 2
-
-	const thumbCenterX =
-		trackWidth > 0
-			? ((displayValue - EQ_MIN_GAIN_DB) / PREAMP_RANGE_DB) * trackWidth
-			: centerX
+	const captionStyle = [
+		styles.preampCaption,
+		{ color: colors.onSurfaceVariant },
+	]
 
 	return (
 		<View
@@ -209,7 +183,17 @@ function PreampControl({
 			testID='eq-preamp-control'
 		>
 			<View style={styles.preampHeader}>
-				<Text variant='bodyMedium'>前置增益（Preamp）</Text>
+				<View style={styles.preampLabel}>
+					<Text variant='bodyLarge'>前置增益（Preamp）</Text>
+					<Text
+						variant='bodySmall'
+						style={captionStyle}
+					>
+						补偿整体电平，范围 {formatPreampDb(EQ_MIN_GAIN_DB)} 至{' '}
+						{formatPreampDb(EQ_MAX_GAIN_DB)} dB，步进{' '}
+						{formatPreampDb(PREAMP_STEP_DB)} dB。
+					</Text>
+				</View>
 				<View style={styles.preampValue}>
 					<Text
 						variant='labelLarge'
@@ -226,47 +210,39 @@ function PreampControl({
 					/>
 				</View>
 			</View>
-			<GestureDetector gesture={panGesture}>
-				<View
-					accessible
-					accessibilityRole='adjustable'
-					accessibilityLabel='前置增益'
-					accessibilityValue={{ text: `${formatPreampDb(displayValue)} 分贝` }}
-					accessibilityActions={[{ name: 'increment' }, { name: 'decrement' }]}
-					onAccessibilityAction={handleAccessibilityAction}
-					style={styles.preampTrackArea}
-					onLayout={handleTrackLayout}
+			{isAndroid ? (
+				<Host
+					matchContents={{ vertical: true }}
+					style={styles.preampHost}
 				>
-					<View
-						style={[
-							styles.preampTrack,
-							{ backgroundColor: colors.outlineVariant },
-						]}
+					<Slider
+						value={displayValue}
+						min={EQ_MIN_GAIN_DB}
+						max={EQ_MAX_GAIN_DB}
+						steps={PREAMP_STEPS}
+						enabled={enabled}
+						colors={{
+							thumbColor: activeColor,
+							activeTrackColor: activeColor,
+							inactiveTrackColor: colors.outlineVariant,
+							activeTickColor: activeColor,
+							inactiveTickColor: colors.outline,
+						}}
+						onValueChange={handleValueChange}
+						onValueChangeFinished={handleValueChangeFinished}
 					/>
-					<View
-						style={[
-							styles.preampFill,
-							{
-								left: Math.min(thumbCenterX, centerX),
-								width: Math.abs(thumbCenterX - centerX),
-								backgroundColor: activeColor,
-							},
-						]}
-					/>
-					<View
-						style={[
-							styles.preampThumb,
-							{
-								left: thumbCenterX - PREAMP_THUMB_SIZE / 2,
-								backgroundColor: activeColor,
-							},
-						]}
-					/>
-				</View>
-			</GestureDetector>
+				</Host>
+			) : (
+				<Text
+					variant='bodySmall'
+					style={captionStyle}
+				>
+					前置增益调节仅支持 Android 设备。
+				</Text>
+			)}
 			<Text
 				variant='bodySmall'
-				style={{ color: colors.onSurfaceVariant }}
+				style={captionStyle}
 			>
 				提升整体电平会让频段提升更容易削波，建议同时开启防破音保护。
 			</Text>
@@ -794,6 +770,7 @@ const styles = StyleSheet.create({
 	},
 	rowText: {
 		flex: 1,
+		flexShrink: 1,
 		marginEnd: 12,
 	},
 	hint: {
@@ -812,6 +789,14 @@ const styles = StyleSheet.create({
 		flexDirection: 'row',
 		justifyContent: 'space-between',
 	},
+	preampLabel: {
+		flexShrink: 1,
+		marginEnd: 12,
+	},
+	preampCaption: {
+		marginTop: 2,
+		opacity: 0.9,
+	},
 	preampValue: {
 		alignItems: 'center',
 		flexDirection: 'row',
@@ -819,26 +804,8 @@ const styles = StyleSheet.create({
 	preampValueText: {
 		fontVariant: ['tabular-nums'],
 	},
-	preampTrackArea: {
-		height: PREAMP_TRACK_HEIGHT,
-		justifyContent: 'center',
-	},
-	preampTrack: {
-		borderRadius: PREAMP_TRACK_THICKNESS / 2,
-		height: PREAMP_TRACK_THICKNESS,
-		position: 'absolute',
+	preampHost: {
 		width: '100%',
-	},
-	preampFill: {
-		borderRadius: PREAMP_TRACK_THICKNESS / 2,
-		height: PREAMP_TRACK_THICKNESS,
-		position: 'absolute',
-	},
-	preampThumb: {
-		borderRadius: PREAMP_THUMB_SIZE / 2,
-		elevation: 2,
-		height: PREAMP_THUMB_SIZE,
-		position: 'absolute',
-		width: PREAMP_THUMB_SIZE,
+		marginTop: 8,
 	},
 })

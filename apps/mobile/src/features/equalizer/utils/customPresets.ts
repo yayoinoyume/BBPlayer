@@ -107,7 +107,9 @@ export function parseCustomPresetsJson(raw: string): EqualizerPreset[] {
 
 		const name = sanitizePresetName(record.name ?? '')
 
-		if (!id || !name || seenIds.has(id)) continue
+		if (!id || !name || seenIds.has(id) || BUILTIN_PRESET_ID_SET.has(id)) {
+			continue
+		}
 
 		seenIds.add(id)
 

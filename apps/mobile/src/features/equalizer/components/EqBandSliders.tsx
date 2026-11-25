@@ -74,7 +74,7 @@ interface BandSliderProps {
 	enabled: boolean
 	onChange: (index: number, gainDb: number) => void
 	onCommit: (index: number, gainDb: number) => void
-	onDragActiveChange: (active: boolean) => void
+	onDragActiveChange: (index: number, active: boolean) => void
 }
 
 function BandSlider({
@@ -127,7 +127,7 @@ function BandSlider({
 			draggingRef.current = true
 			movedRef.current = false
 			lastEmitRef.current = 0
-			onDragActiveChange(true)
+			onDragActiveChange(index, true)
 
 			const nextGainDb = yToGain(event.y)
 
@@ -142,7 +142,7 @@ function BandSlider({
 		},
 		onFinalize: (event) => {
 			draggingRef.current = false
-			onDragActiveChange(false)
+			onDragActiveChange(index, false)
 
 			const finalGainDb = yToGain(event.y)
 
@@ -255,20 +255,45 @@ export default function EqBandSliders({
 	onBandCommit,
 	onDragActiveChange,
 }: EqBandSlidersProps) {
-	const [isDragging, setIsDragging] = useState(false)
+	const activeDragsRef = useRef(new Set<number>())
+
+	const [isAnyBandDragging, setIsAnyBandDragging] = useState(false)
 
 	const handleDragActiveChange = useCallback(
-		(active: boolean) => {
-			setIsDragging(active)
-			onDragActiveChange(active)
+		(index: number, active: boolean) => {
+			const activeDrags = activeDragsRef.current
+
+			const wasDragging = activeDrags.size > 0
+
+			if (active) {
+				activeDrags.add(index)
+			} else {
+				activeDrags.delete(index)
+			}
+
+			const isDragging = activeDrags.size > 0
+
+			if (wasDragging === isDragging) return
+
+			setIsAnyBandDragging(isDragging)
+
+			onDragActiveChange(isDragging)
 		},
 		[onDragActiveChange],
 	)
 
+	useEffect(() => {
+		const activeDrags = activeDragsRef.current
+
+		return () => {
+			activeDrags.clear()
+		}
+	}, [])
+
 	return (
 		<ScrollView
 			horizontal
-			scrollEnabled={!isDragging}
+			scrollEnabled={!isAnyBandDragging}
 			showsHorizontalScrollIndicator={false}
 			contentContainerStyle={styles.content}
 		>

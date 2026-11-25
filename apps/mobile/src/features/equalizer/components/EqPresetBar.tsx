@@ -1,21 +1,10 @@
 import { BUILTIN_EQ_PRESETS, type EqualizerPreset } from '@bbplayer/orpheus'
-import { useCallback, useMemo, useState } from 'react'
+import { useCallback, useMemo } from 'react'
 import { ScrollView, StyleSheet, View } from 'react-native'
-import {
-	Chip,
-	Dialog,
-	Portal,
-	Text,
-	TextInput,
-	useTheme,
-} from 'react-native-paper'
+import { Chip, Text, useTheme } from 'react-native-paper'
 
 import Button from '@/components/common/Button'
-import { useDialogHorizontalMargin } from '@/hooks/ui/useResponsiveLayout'
-
-const MAX_PRESET_NAME_LENGTH = 24
-
-type NameDialogMode = 'save' | 'rename'
+import { useModalStore } from '@/hooks/stores/useModalStore'
 
 export interface EqPresetBarProps {
 	activePresetId: string | null
@@ -40,72 +29,43 @@ export default function EqPresetBar({
 }: EqPresetBarProps) {
 	const { colors } = useTheme()
 
-	const dialogMargin = useDialogHorizontalMargin()
-
-	const [nameDialogMode, setNameDialogMode] = useState<NameDialogMode | null>(
-		null,
-	)
-
-	const [nameDraft, setNameDraft] = useState('')
-
-	const [renameTargetId, setRenameTargetId] = useState<string | null>(null)
-
-	const [deleteTargetId, setDeleteTargetId] = useState<string | null>(null)
-
 	const activeCustomPreset = useMemo(
 		() => customPresets.find((preset) => preset.id === activePresetId) ?? null,
 		[activePresetId, customPresets],
 	)
 
-	const deleteTarget = useMemo(
-		() => customPresets.find((preset) => preset.id === deleteTargetId) ?? null,
-		[deleteTargetId, customPresets],
+	const openSaveDialog = useCallback(() => {
+		useModalStore.getState().open('EqPresetName', {
+			mode: 'create',
+			initialName: `自定义${customPresets.length + 1}`,
+			onConfirm: onSaveAs,
+		})
+	}, [customPresets.length, onSaveAs])
+
+	const openRenameDialog = useCallback(
+		(preset: EqualizerPreset) => {
+			useModalStore.getState().open('EqPresetName', {
+				mode: 'rename',
+				initialName: preset.name,
+				onConfirm: (name) => onRename(preset.id, name),
+			})
+		},
+		[onRename],
 	)
 
-	const openSaveDialog = useCallback(() => {
-		setNameDraft(`自定义${customPresets.length + 1}`)
-		setRenameTargetId(null)
-		setNameDialogMode('save')
-	}, [customPresets.length])
-
-	const openRenameDialog = useCallback((preset: EqualizerPreset) => {
-		setNameDraft(preset.name)
-		setRenameTargetId(preset.id)
-		setNameDialogMode('rename')
-	}, [])
-
-	const closeNameDialog = useCallback(() => {
-		setNameDialogMode(null)
-		setRenameTargetId(null)
-	}, [])
-
-	const handleConfirmName = useCallback(() => {
-		const name = nameDraft.trim()
-
-		if (!name) return
-
-		if (nameDialogMode === 'rename') {
-			if (renameTargetId) onRename(renameTargetId, name)
-		} else if (nameDialogMode === 'save') {
-			onSaveAs(name)
-		}
-
-		closeNameDialog()
-	}, [
-		closeNameDialog,
-		nameDialogMode,
-		nameDraft,
-		onRename,
-		onSaveAs,
-		renameTargetId,
-	])
-
-	const handleConfirmDelete = useCallback(() => {
-		if (!deleteTargetId) return
-
-		onDelete(deleteTargetId)
-		setDeleteTargetId(null)
-	}, [deleteTargetId, onDelete])
+	const confirmDelete = useCallback(
+		(preset: EqualizerPreset) => {
+			useModalStore.getState().open('Alert', {
+				title: '删除预设',
+				message: `确定删除「${preset.name}」吗？删除后无法恢复。`,
+				buttons: [
+					{ text: '取消' },
+					{ text: '删除', onPress: () => onDelete(preset.id) },
+				],
+			})
+		},
+		[onDelete],
+	)
 
 	return (
 		<View style={styles.container}>
@@ -177,7 +137,7 @@ export default function EqPresetBar({
 						mode='text'
 						compact
 						testID='eq-delete-preset-button'
-						onPress={() => setDeleteTargetId(activeCustomPreset.id)}
+						onPress={() => confirmDelete(activeCustomPreset)}
 					>
 						删除
 					</Button>
@@ -191,71 +151,6 @@ export default function EqPresetBar({
 					均衡器已关闭，选择预设后开启即可生效。
 				</Text>
 			) : null}
-			<Portal>
-				<Dialog
-					visible={nameDialogMode !== null}
-					onDismiss={closeNameDialog}
-					style={{ marginHorizontal: dialogMargin }}
-				>
-					<Dialog.Title>
-						{nameDialogMode === 'rename' ? '重命名预设' : '另存为自定义预设'}
-					</Dialog.Title>
-					<Dialog.Content>
-						<TextInput
-							mode='outlined'
-							label='预设名称'
-							value={nameDraft}
-							maxLength={MAX_PRESET_NAME_LENGTH}
-							autoFocus
-							testID='eq-preset-name-input'
-							onChangeText={setNameDraft}
-						/>
-					</Dialog.Content>
-					<Dialog.Actions>
-						<Button
-							mode='text'
-							onPress={closeNameDialog}
-						>
-							取消
-						</Button>
-						<Button
-							mode='text'
-							disabled={!nameDraft.trim()}
-							testID='eq-preset-name-confirm'
-							onPress={handleConfirmName}
-						>
-							保存
-						</Button>
-					</Dialog.Actions>
-				</Dialog>
-				<Dialog
-					visible={deleteTarget !== null}
-					onDismiss={() => setDeleteTargetId(null)}
-					style={{ marginHorizontal: dialogMargin }}
-				>
-					<Dialog.Title>删除预设</Dialog.Title>
-					<Dialog.Content>
-						<Text variant='bodyMedium'>
-							确定删除「{deleteTarget?.name ?? ''}」吗？删除后无法恢复。
-						</Text>
-					</Dialog.Content>
-					<Dialog.Actions>
-						<Button
-							mode='text'
-							onPress={() => setDeleteTargetId(null)}
-						>
-							取消
-						</Button>
-						<Button
-							mode='text'
-							testID='eq-preset-delete-confirm'
-							onPress={handleConfirmDelete}
-						>
-							删除
-						</Button>
-					</Dialog.Actions>
-				</Dialog>
-			</Portal>
 		</View>
 	)
 }

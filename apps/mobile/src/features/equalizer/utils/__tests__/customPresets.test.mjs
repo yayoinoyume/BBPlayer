@@ -138,6 +138,30 @@ test('parseCustomPresetsJson 归一化越界增益与前置增益', () => {
 	assert.equal(negative.preampDb, -12)
 })
 
+test('parseCustomPresetsJson 丢弃占用内置预设 ID 的条目', () => {
+	const parsed = parseCustomPresetsJson(
+		JSON.stringify([
+			createCustomPreset({ id: 'flat', name: '伪平坦' }),
+			createCustomPreset({ id: 'bass_boost', name: '伪低音增强' }),
+			createCustomPreset({ id: 'custom-keep', name: '保留的自定义预设' }),
+		]),
+	)
+
+	assert.equal(parsed.length, 1)
+
+	assert.equal(parsed[0].id, 'custom-keep')
+
+	const allBuiltin = parseCustomPresetsJson(
+		JSON.stringify(
+			BUILTIN_EQ_PRESET_IDS.map((id) =>
+				createCustomPreset({ id, name: `伪${id}` }),
+			),
+		),
+	)
+
+	assert.deepEqual(allBuiltin, [])
+})
+
 test('upsertCustomPreset 支持新建、覆盖与名称截断', () => {
 	const created = upsertCustomPreset([], {
 		name: '  新的预设  ',
