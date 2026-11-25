@@ -57,6 +57,105 @@ export const AUDIO_QUALITY_OPTIONS = [
 	AUDIO_QUALITY_BY_PREFERENCE.dolby,
 ] satisfies readonly AudioQualityOption[]
 
+/**
+ * B 站账号权限等级
+ */
+export type BilibiliAccountTier = 'guest' | 'logged_in' | 'vip'
+
+/**
+ * 各权限等级可用的音质档位
+ */
+const ACCOUNT_TIER_QUALITIES: Record<
+	BilibiliAccountTier,
+	readonly AudioQualityPreference[]
+> = {
+	guest: ['low', 'standard'],
+	logged_in: ['low', 'standard', 'high'],
+	vip: ['low', 'standard', 'high', 'hires', 'dolby'],
+}
+
+interface BilibiliNavInfoLike {
+	isLogin?: boolean
+	vipStatus?: number
+	vip?: { status?: number } | null
+}
+
+/**
+ * 根据登录态与导航信息解析账号权限等级
+ */
+export function resolveBilibiliAccountTier(params: {
+	hasCookie: boolean
+	navInfo?: BilibiliNavInfoLike | null
+}): BilibiliAccountTier {
+	const { hasCookie, navInfo } = params
+
+	if (!hasCookie) {
+		return 'guest'
+	}
+
+	if (navInfo == null) {
+		return 'logged_in'
+	}
+
+	if (navInfo.isLogin === false) {
+		return 'guest'
+	}
+
+	if (navInfo.vipStatus === 1 || navInfo.vip?.status === 1) {
+		return 'vip'
+	}
+
+	return 'logged_in'
+}
+
+/**
+ * 过滤出账号权限与当前曲目真实可用音轨都支持的音质档位
+ */
+export function getVisibleAudioQualityOptions(params: {
+	accountTier: BilibiliAccountTier
+	availableQualities?: readonly AudioQualityPreference[] | null
+	isFromDownloadCache?: boolean
+}): readonly AudioQualityOption[] {
+	const { accountTier, availableQualities, isFromDownloadCache } = params
+
+	const accountQualities = ACCOUNT_TIER_QUALITIES[accountTier]
+
+	const trackQualities =
+		isFromDownloadCache === true ||
+		availableQualities == null ||
+		availableQualities.length === 0
+			? null
+			: new Set<AudioQualityPreference>(availableQualities)
+
+	const matchedQualities = trackQualities
+		? accountQualities.filter((quality) => trackQualities.has(quality))
+		: accountQualities
+
+	const visibleQualities =
+		matchedQualities.length > 0 ? matchedQualities : accountQualities
+
+	return AUDIO_QUALITY_OPTIONS.filter((option) =>
+		visibleQualities.includes(option.value),
+	)
+}
+
+/**
+ * 获取当前账号权限下关于隐藏档位的简短提示
+ */
+export function getAudioQualityAccessHint(
+	accountTier: BilibiliAccountTier,
+): string | null {
+	if (accountTier === 'guest') {
+		return '未登录仅显示省流与标准音质，登录 B 站账号可解锁高品及以上'
+	}
+
+	if (accountTier === 'logged_in') {
+		return '当前账号非大会员，已隐藏 Hi-Res 无损与杜比全景声'
+	}
+
+	return null
+}
+
 const NORMAL_STREAM_PREFERENCES = new Map<number, AudioQualityPreference>([
 	[30216, 'low'],
 	[30232, 'standard'],

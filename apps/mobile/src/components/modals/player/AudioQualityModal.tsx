@@ -17,11 +17,14 @@ import {
 import ActivityIndicator from '@/components/common/ActivityIndicator'
 import Button from '@/components/common/Button'
 import {
-	AUDIO_QUALITY_OPTIONS,
 	formatActualAudioQuality,
 	formatAudioQualityLabel,
+	getAudioQualityAccessHint,
+	getVisibleAudioQualityOptions,
 } from '@/constants/audioQuality'
+import { useBilibiliAccountAccess } from '@/hooks/queries/bilibili/user'
 import { useModalStore } from '@/hooks/stores/useModalStore'
+import { LIST_ITEM_BORDER_RADIUS } from '@/theme/dimensions'
 import { toastAndLogError } from '@/utils/error-handling'
 import toast from '@/utils/toast'
 
@@ -123,8 +126,20 @@ const AudioQualityModal = () => {
 		}
 	}
 
+	const actual = formatActualAudioQuality(actualQuality)
+
+	const accountAccess = useBilibiliAccountAccess()
+
+	const visibleOptions = getVisibleAudioQualityOptions({
+		accountTier: accountAccess.tier,
+		availableQualities: actualQuality?.availableQualities,
+		isFromDownloadCache: actualQuality?.isFromDownloadCache,
+	})
+
+	const accessHint = getAudioQualityAccessHint(accountAccess.tier)
+
 	const handleGroupChange = (value: string) => {
-		const option = AUDIO_QUALITY_OPTIONS.find((item) => item.value === value)
+		const option = visibleOptions.find((item) => item.value === value)
 
 		if (!option) {
 			return
@@ -132,8 +147,6 @@ const AudioQualityModal = () => {
 
 		void switchQuality(option.value)
 	}
-
-	const actual = formatActualAudioQuality(actualQuality)
 
 	return (
 		<>
@@ -176,12 +189,21 @@ const AudioQualityModal = () => {
 						</Text>
 					</Surface>
 
+					{accessHint !== null && (
+						<Text
+							variant='bodySmall'
+							style={[styles.accessHint, { color: colors.onSurfaceVariant }]}
+						>
+							{accessHint}
+						</Text>
+					)}
+
 					<RadioButton.Group
 						value={preference}
 						onValueChange={handleGroupChange}
 					>
 						<View style={styles.optionList}>
-							{AUDIO_QUALITY_OPTIONS.map((option) => {
+							{visibleOptions.map((option) => {
 								const selected = option.value === preference
 
 								return (
@@ -276,14 +298,18 @@ const styles = StyleSheet.create({
 	optionList: {
 		gap: 2,
 	},
+	accessHint: {
+		marginBottom: 8,
+	},
 	optionRow: {
-		borderRadius: 16,
+		borderRadius: LIST_ITEM_BORDER_RADIUS,
+		paddingHorizontal: 8,
+		paddingVertical: 6,
 	},
 	optionContent: {
 		flexDirection: 'row',
 		alignItems: 'center',
-		paddingRight: 12,
-		paddingVertical: 4,
+		gap: 4,
 	},
 	optionIndicator: {
 		marginHorizontal: 14,
@@ -296,10 +322,12 @@ const styles = StyleSheet.create({
 	optionHeader: {
 		flexDirection: 'row',
 		alignItems: 'center',
+		flexShrink: 1,
 		gap: 6,
 	},
 	optionBadge: {
 		fontWeight: 'bold',
+		flexShrink: 1,
 	},
 })
 

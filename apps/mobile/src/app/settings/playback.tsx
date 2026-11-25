@@ -33,6 +33,7 @@ import useCurrentTrack from '@/hooks/player/useCurrentTrack'
 import useAppStore from '@/hooks/stores/useAppStore'
 import { useModalStore } from '@/hooks/stores/useModalStore'
 import { useMenuActions } from '@/hooks/ui/useMenuActions'
+import { LIST_ITEM_BORDER_RADIUS } from '@/theme/dimensions'
 import { toastAndLogError } from '@/utils/error-handling'
 
 export default function PlaybackSettingsPage() {
@@ -189,10 +190,20 @@ export default function PlaybackSettingsPage() {
 						<View style={styles.audioQualityRowContent}>
 							<View style={styles.settingDescription}>
 								<Text>首选音质</Text>
-								<Text variant='bodySmall'>{audioQualityDescription}</Text>
+								<Text
+									variant='bodySmall'
+									style={{ color: colors.onSurfaceVariant }}
+								>
+									{audioQualityDescription}
+								</Text>
 							</View>
 							<View style={styles.audioQualityValue}>
-								<Text variant='labelLarge'>{audioQualityLabel}</Text>
+								<Text
+									variant='labelLarge'
+									numberOfLines={1}
+								>
+									{audioQualityLabel}
+								</Text>
 								<Icon
 									source='chevron-right'
 									size={20}
@@ -211,7 +222,10 @@ export default function PlaybackSettingsPage() {
 						<View style={styles.audioQualityRowContent}>
 							<View style={styles.settingDescription}>
 								<Text>均衡器（EQ）</Text>
-								<Text variant='bodySmall'>
+								<Text
+									variant='bodySmall'
+									style={{ color: colors.onSurfaceVariant }}
+								>
 									{equalizerEnabled
 										? `已开启${equalizerPresetName ? ` · ${equalizerPresetName}` : ''}`
 										: '已关闭'}
@@ -313,11 +327,15 @@ const styles = StyleSheet.create({
 	},
 	settingDescription: {
 		flex: 1,
+		flexShrink: 1,
 		marginEnd: 12,
 	},
 	audioQualityRow: {
 		marginTop: 16,
-		borderRadius: 16,
+		marginHorizontal: -12,
+		borderRadius: LIST_ITEM_BORDER_RADIUS,
+		paddingHorizontal: 12,
+		paddingVertical: 10,
 	},
 	audioQualityRowContent: {
 		flexDirection: 'row',
@@ -327,6 +345,7 @@ const styles = StyleSheet.create({
 	audioQualityValue: {
 		flexDirection: 'row',
 		alignItems: 'center',
+		flexShrink: 0,
 		gap: 2,
 	},
 })
