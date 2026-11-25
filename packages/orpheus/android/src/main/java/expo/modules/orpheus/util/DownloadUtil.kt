@@ -242,6 +242,7 @@ object DownloadUtil {
                                 bandwidth = resolved.bandwidth,
                                 isFallback = AudioQualityStore.isFallback(request.preference, resolved.kind, resolved.streamId),
                                 isFromDownloadCache = false,
+                                availableQualities = resolved.availableQualities,
                             ),
                         )
                     }

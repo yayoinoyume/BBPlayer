@@ -77,6 +77,8 @@ export type AudioQualityPreference =
 	| 'hires'
 	| 'dolby'
 
+export type AudioQuality = AudioQualityPreference
+
 export type AudioQualityActualKind =
 	| 'dolby'
 	| 'hires'
@@ -93,6 +95,7 @@ export interface AudioQualityInfo {
 	bandwidth: number | null
 	isFallback: boolean
 	isFromDownloadCache: boolean
+	availableQualities?: AudioQuality[]
 }
 
 export interface ReloadAudioQualityResult {

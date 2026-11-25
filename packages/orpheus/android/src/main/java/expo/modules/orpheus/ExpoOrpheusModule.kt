@@ -34,6 +34,7 @@ import expo.modules.kotlin.typedarray.Float32Array
 import expo.modules.orpheus.util.DirectoryPickerContract
 import expo.modules.orpheus.exception.ControllerNotInitializedException
 import expo.modules.orpheus.manager.AudioQualityInfo
+import expo.modules.orpheus.manager.AudioQualityStore
 import expo.modules.orpheus.manager.CoverDownloadManager
 import expo.modules.orpheus.manager.DownloadCache
 import expo.modules.orpheus.manager.EQ_BAND_COUNT
@@ -1040,6 +1041,7 @@ class ExpoOrpheusModule : Module() {
         AsyncFunction("clearPlaybackCache") Coroutine { ->
             val context = cachedAppContext ?: error("Orpheus application context is unavailable")
             withContext(Dispatchers.IO) { DownloadCache.clearLruCache(context) }
+            AudioQualityStore.clearAll()
         }
 
         AsyncFunction("getDownloads") {

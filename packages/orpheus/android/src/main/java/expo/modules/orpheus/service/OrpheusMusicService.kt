@@ -11,6 +11,8 @@ import androidx.annotation.OptIn
 import androidx.core.net.toUri
 import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
+import androidx.media3.common.Format
+import androidx.media3.common.ForwardingPlayer
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MediaMetadata
 import androidx.media3.common.Player
@@ -191,6 +193,7 @@ class OrpheusMusicService : MediaLibraryService() {
         NativeLog.info(LogTags.SERVICE, "player.service.created")
 
         GeneralStorage.initialize(this)
+        AudioQualityStore.init(applicationContext)
         GeneralStorage.restoreEqualizerConfigToHolder()
         LoudnessStorage.initialize(this)
         TrackResumeStorage.initialize(this)
@@ -379,6 +382,7 @@ class OrpheusMusicService : MediaLibraryService() {
             .build()
 
         audioDebugTracker = AudioDebugTracker().also { tracker ->
+            tracker.onAudioFormatChangedListener = ::onAudioFormatChanged
             player?.addAnalyticsListener(tracker)
         }
 
@@ -470,7 +474,8 @@ class OrpheusMusicService : MediaLibraryService() {
     private val audioQualityStoreListener: (String, AudioQualityInfo) -> Unit = { uri, info ->
         serviceHandler.post {
             val currentUri = player?.currentMediaItem?.localConfiguration?.uri?.toString()
-            if (currentUri == uri) {
+            val preferred = AudioQualityStore.normalizePreference(GeneralStorage.getPreferredAudioQuality())
+            if (currentUri == uri && info.preferredQuality == preferred) {
                 broadcastAudioQuality(info)
             }
         }
@@ -480,23 +485,51 @@ class OrpheusMusicService : MediaLibraryService() {
         audioQualityEventListeners.forEach { listener -> listener.onAudioQualityChanged(info) }
     }
 
-    private fun currentAudioQualityInfo(uri: android.net.Uri, uriString: String): AudioQualityInfo {
-        val preferred = GeneralStorage.getPreferredAudioQuality()
+    private fun onAudioFormatChanged(format: Format) {
+        serviceHandler.post {
+            val uri = player?.currentMediaItem?.localConfiguration?.uri ?: return@post
+            if (uri.scheme != "orpheus" || uri.host != "bilibili") return@post
+            val uriString = uri.toString()
+            if (DownloadUtil.isFullyCachedInDownloadCache(this, uriString)) return@post
+            val preferred = GeneralStorage.getPreferredAudioQuality()
+            if (AudioQualityStore.get(uriString, preferred) != null) return@post
+            val bitrate = if (format.bitrate > 0) format.bitrate else format.averageBitrate
+            val info = AudioQualityStore.inferFromAudioFormat(
+                preferred,
+                format.sampleMimeType,
+                format.codecs,
+                bitrate,
+            ) ?: return@post
+            broadcastAudioQuality(info)
+        }
+    }
+
+    private fun currentAudioQualityInfo(uri: android.net.Uri, preferredQuality: String): AudioQualityInfo {
+        val preferred = AudioQualityStore.normalizePreference(preferredQuality)
         if (uri.scheme != "orpheus" || uri.host != "bilibili") {
             return AudioQualityInfo(preferred, AudioQualityStore.KIND_LOCAL, null, null, null, false, false)
         }
+        val uriString = uri.toString()
         if (DownloadUtil.isFullyCachedInDownloadCache(this, uriString)) {
             return AudioQualityInfo(preferred, AudioQualityStore.KIND_LOCAL, null, null, null, false, true)
         }
-        val cached = AudioQualityStore.get(uriString)
-        if (cached != null && cached.preferredQuality == preferred) return cached
-        return AudioQualityInfo(preferred, AudioQualityStore.KIND_UNKNOWN, null, null, null, false, false)
+        AudioQualityStore.get(uriString, preferred)?.let { return it }
+        return inferPlaybackQuality(uri, preferred)
+            ?: AudioQualityInfo(preferred, AudioQualityStore.KIND_UNKNOWN, null, null, null, false, false)
+    }
+
+    private fun inferPlaybackQuality(uri: android.net.Uri, preferredQuality: String): AudioQualityInfo? {
+        val currentUri = player?.currentMediaItem?.localConfiguration?.uri?.toString() ?: return null
+        if (currentUri != uri.toString()) return null
+        val format = player?.audioFormat ?: audioDebugTracker?.getCurrentInputFormat() ?: return null
+        val bitrate = if (format.bitrate > 0) format.bitrate else format.averageBitrate
+        return AudioQualityStore.inferFromAudioFormat(preferredQuality, format.sampleMimeType, format.codecs, bitrate)
     }
 
     fun getCurrentAudioQuality(): Map<String, Any?>? {
         val item = player?.currentMediaItem ?: return null
         val uri = item.localConfiguration?.uri ?: return null
-        return currentAudioQualityInfo(uri, uri.toString()).toMap()
+        return currentAudioQualityInfo(uri, GeneralStorage.getPreferredAudioQuality()).toMap()
     }
 
     fun reloadCurrentTrackForQualityChange(): Map<String, Any> {
@@ -539,6 +572,7 @@ class OrpheusMusicService : MediaLibraryService() {
         floatingLyricsManager.hide()
         statusBarLyricsManager.destroy()
         AudioQualityStore.removeListener(audioQualityStoreListener)
+        audioDebugTracker?.onAudioFormatChangedListener = null
         instance = null
 
         mediaSession?.run {
@@ -859,7 +893,7 @@ class OrpheusMusicService : MediaLibraryService() {
                 }
                 currentMediaId = mediaId
                 mediaItem?.localConfiguration?.uri?.let { uri ->
-                    broadcastAudioQuality(currentAudioQualityInfo(uri, uri.toString()))
+                    broadcastAudioQuality(currentAudioQualityInfo(uri, GeneralStorage.getPreferredAudioQuality()))
                 }
                 OrpheusTelemetry.onMediaItemChanged(mediaId, mediaItem?.localConfiguration?.uri?.toString())
                 // 单曲循环回到开头不算一次起播

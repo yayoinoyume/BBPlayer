@@ -1,6 +1,11 @@
 package expo.modules.orpheus.manager
 
+import android.content.Context
+import android.content.SharedPreferences
 import expo.modules.orpheus.bilibili.BilibiliAudioQualityId
+import org.json.JSONArray
+import org.json.JSONObject
+import java.util.Locale
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CopyOnWriteArrayList
 
@@ -12,6 +17,7 @@ data class AudioQualityInfo(
     val bandwidth: Long?,
     val isFallback: Boolean,
     val isFromDownloadCache: Boolean,
+    val availableQualities: List<String> = emptyList(),
 ) {
     fun toMap(): Map<String, Any?> = mapOf(
         "preferredQuality" to preferredQuality,
@@ -21,6 +27,7 @@ data class AudioQualityInfo(
         "bandwidth" to bandwidth,
         "isFallback" to isFallback,
         "isFromDownloadCache" to isFromDownloadCache,
+        "availableQualities" to availableQualities,
     )
 }
 
@@ -45,9 +52,20 @@ object AudioQualityStore {
     const val KIND_LOCAL = "local"
     const val KIND_UNKNOWN = "unknown"
 
+    private const val PREFS_NAME = "orpheus_audio_quality_meta"
+    private const val PREFS_KEY_ENTRIES = "entries"
+    private const val MAX_PERSISTED_ENTRIES = 500
+    private const val HIRES_STREAM_ID = 30251
+    private const val DOLBY_STREAM_ID = 30250
+
+    private val DOLBY_CODEC_TOKENS = listOf("ec-3", "ac-3", "eac3", "ac-4", "mlpa")
+
     private val preferences = setOf(PREF_LOW, PREF_STANDARD, PREF_HIGH, PREF_HIRES, PREF_DOLBY)
     private val infos = ConcurrentHashMap<String, AudioQualityInfo>()
     private val listeners = CopyOnWriteArrayList<(String, AudioQualityInfo) -> Unit>()
+
+    @Volatile
+    private var prefs: SharedPreferences? = null
 
     fun isValidPreference(value: String?): Boolean = value != null && preferences.contains(value)
 
@@ -87,15 +105,124 @@ object AudioQualityStore {
         return (actualStreamId ?: 0) < requestFor(preference).audioQuality
     }
 
+    fun cacheKeyOf(uri: String, preferredQuality: String): String = "$uri|q=${normalizePreference(preferredQuality)}"
+
+    @Synchronized
+    fun init(context: Context) {
+        prefs = runCatching {
+            context.applicationContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        }.getOrNull()
+    }
+
     fun put(uri: String, info: AudioQualityInfo) {
-        infos[uri] = info
+        val key = cacheKeyOf(uri, info.preferredQuality)
+        infos[key] = info
+        persist(key, info)
         listeners.forEach { listener -> listener(uri, info) }
     }
 
-    fun get(uri: String): AudioQualityInfo? = infos[uri]
+    fun get(uri: String, preferredQuality: String): AudioQualityInfo? {
+        val key = cacheKeyOf(uri, preferredQuality)
+        infos[key]?.let { return it }
+        val restored = restore(key) ?: return null
+        infos[key] = restored
+        return restored
+    }
 
     fun clear(uri: String) {
-        infos.remove(uri)
+        val prefix = "$uri|q="
+        infos.keys.filter { it.startsWith(prefix) }.forEach { infos.remove(it) }
+    }
+
+    @Synchronized
+    fun clearAll() {
+        infos.clear()
+        runCatching { prefs?.edit()?.clear()?.apply() }
+    }
+
+    fun inferFromAudioFormat(
+        preferredQuality: String,
+        sampleMimeType: String?,
+        codecs: String?,
+        bitrate: Int,
+    ): AudioQualityInfo? {
+        val preference = normalizePreference(preferredQuality)
+        val probe = listOfNotNull(sampleMimeType, codecs).joinToString(" ").lowercase(Locale.ROOT)
+        val (actualKind, actualStreamId) = when {
+            probe.contains("flac") -> KIND_HIRES to HIRES_STREAM_ID
+            DOLBY_CODEC_TOKENS.any { token -> probe.contains(token) } -> KIND_DOLBY to DOLBY_STREAM_ID
+            bitrate >= 160_000 -> KIND_NORMAL to BilibiliAudioQualityId.HIGH
+            bitrate >= 96_000 -> KIND_NORMAL to BilibiliAudioQualityId.STANDARD
+            bitrate > 0 -> KIND_NORMAL to BilibiliAudioQualityId.LOW
+            else -> return null
+        }
+        return AudioQualityInfo(
+            preferredQuality = preference,
+            actualKind = actualKind,
+            actualStreamId = actualStreamId,
+            codecs = codecs?.takeIf { it.isNotBlank() } ?: sampleMimeType,
+            bandwidth = bitrate.takeIf { it > 0 }?.toLong(),
+            isFallback = isFallback(preference, actualKind, actualStreamId),
+            isFromDownloadCache = false,
+            availableQualities = emptyList(),
+        )
+    }
+
+    @Synchronized
+    private fun persist(key: String, info: AudioQualityInfo) {
+        val store = prefs ?: return
+        runCatching {
+            val entries = readEntries(store)
+            entries.put(key, encode(info))
+            trim(entries)
+            store.edit().putString(PREFS_KEY_ENTRIES, entries.toString()).apply()
+        }
+    }
+
+    @Synchronized
+    private fun restore(key: String): AudioQualityInfo? {
+        val store = prefs ?: return null
+        return runCatching { readEntries(store).optJSONObject(key)?.let(::decode) }.getOrNull()
+    }
+
+    private fun readEntries(store: SharedPreferences): JSONObject = runCatching {
+        JSONObject(store.getString(PREFS_KEY_ENTRIES, null) ?: "{}")
+    }.getOrDefault(JSONObject())
+
+    private fun encode(info: AudioQualityInfo): JSONObject = JSONObject().apply {
+        put("updatedAt", System.currentTimeMillis())
+        put("preferredQuality", info.preferredQuality)
+        put("actualKind", info.actualKind)
+        put("actualStreamId", info.actualStreamId ?: JSONObject.NULL)
+        put("codecs", info.codecs ?: JSONObject.NULL)
+        put("bandwidth", info.bandwidth ?: JSONObject.NULL)
+        put("isFallback", info.isFallback)
+        put("isFromDownloadCache", info.isFromDownloadCache)
+        put("availableQualities", JSONArray(info.availableQualities))
+    }
+
+    private fun decode(raw: JSONObject): AudioQualityInfo? = runCatching {
+        AudioQualityInfo(
+            preferredQuality = raw.getString("preferredQuality"),
+            actualKind = raw.getString("actualKind"),
+            actualStreamId = if (raw.isNull("actualStreamId")) null else raw.getInt("actualStreamId"),
+            codecs = if (raw.isNull("codecs")) null else raw.getString("codecs"),
+            bandwidth = if (raw.isNull("bandwidth")) null else raw.getLong("bandwidth"),
+            isFallback = raw.optBoolean("isFallback", false),
+            isFromDownloadCache = raw.optBoolean("isFromDownloadCache", false),
+            availableQualities = raw.optJSONArray("availableQualities")?.let { array ->
+                (0 until array.length()).mapNotNull { index -> array.optString(index).takeIf { it.isNotBlank() } }
+            }.orEmpty(),
+        )
+    }.getOrNull()
+
+    private fun trim(entries: JSONObject) {
+        if (entries.length() <= MAX_PERSISTED_ENTRIES) return
+        val stale = entries.keys().asSequence()
+            .sortedBy { key -> entries.optJSONObject(key)?.optLong("updatedAt", 0L) ?: 0L }
+            .take(entries.length() - MAX_PERSISTED_ENTRIES)
+            .toList()
+        stale.forEach { entries.remove(it) }
     }
 
     fun addListener(listener: (String, AudioQualityInfo) -> Unit) {
