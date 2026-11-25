@@ -28,6 +28,12 @@ import { LIST_ITEM_BORDER_RADIUS } from '@/theme/dimensions'
 import { toastAndLogError } from '@/utils/error-handling'
 import toast from '@/utils/toast'
 
+import {
+	createDelayedVisibilityController,
+	SWITCH_INDICATOR_DELAY_MS,
+	type DelayedVisibilityController,
+} from './audioQualityModalState'
+
 function applyPreferredAudioQuality(preference: AudioQualityPreference) {
 	Orpheus.preferredAudioQuality = preference
 }
@@ -44,8 +50,31 @@ const AudioQualityModal = () => {
 		null,
 	)
 
-	const [switching, setSwitching] = useState(false)
+	const [showReloadIndicator, setShowReloadIndicator] = useState(false)
+
 	const switchingRef = useRef(false)
+	const mountedRef = useRef(true)
+	const reloadIndicatorRef = useRef<DelayedVisibilityController | null>(null)
+
+	useEffect(() => {
+		mountedRef.current = true
+
+		const controller = createDelayedVisibilityController(
+			SWITCH_INDICATOR_DELAY_MS,
+			setShowReloadIndicator,
+		)
+
+		reloadIndicatorRef.current = controller
+
+		return () => {
+			mountedRef.current = false
+			controller.dispose()
+
+			if (reloadIndicatorRef.current === controller) {
+				reloadIndicatorRef.current = null
+			}
+		}
+	}, [])
 
 	useEffect(() => {
 		let cancelled = false
@@ -89,7 +118,7 @@ const AudioQualityModal = () => {
 		const previous = preference
 
 		switchingRef.current = true
-		setSwitching(true)
+		reloadIndicatorRef.current?.start()
 		setPreference(next)
 
 		try {
@@ -107,7 +136,9 @@ const AudioQualityModal = () => {
 				toast.info(`默认音质已设为 ${label}`)
 			}
 		} catch (error) {
-			setPreference(previous)
+			if (mountedRef.current) {
+				setPreference(previous)
+			}
 
 			try {
 				applyPreferredAudioQuality(previous)
@@ -122,7 +153,14 @@ const AudioQualityModal = () => {
 			toastAndLogError('切换音质失败', error, 'Modal.AudioQuality')
 		} finally {
 			switchingRef.current = false
-			setSwitching(false)
+
+			const reloadIndicator = reloadIndicatorRef.current
+
+			if (mountedRef.current) {
+				reloadIndicator?.finish()
+			} else {
+				reloadIndicator?.dispose()
+			}
 		}
 	}
 
@@ -164,12 +202,25 @@ const AudioQualityModal = () => {
 							{ backgroundColor: colors.secondaryContainer },
 						]}
 					>
-						<Text
-							variant='labelMedium'
-							style={{ color: colors.onSecondaryContainer }}
-						>
-							当前实际播放音质
-						</Text>
+						<View style={styles.actualHeader}>
+							<Text
+								variant='labelMedium'
+								style={[
+									styles.actualHeaderLabel,
+									{ color: colors.onSecondaryContainer },
+								]}
+							>
+								当前实际播放音质
+							</Text>
+							<View style={styles.actualIndicatorSlot}>
+								{showReloadIndicator && (
+									<ActivityIndicator
+										size={14}
+										color={colors.onSecondaryContainer}
+									/>
+								)}
+							</View>
+						</View>
 						<Text
 							variant='titleMedium'
 							style={[
@@ -211,30 +262,27 @@ const AudioQualityModal = () => {
 										key={option.value}
 										testID={`audio-quality-option-${option.value}`}
 										borderless
-										disabled={switching}
+										accessibilityRole='radio'
+										accessibilityState={{ checked: selected, selected }}
 										onPress={() => {
 											void switchQuality(option.value)
 										}}
 										style={[
 											styles.optionRow,
-											selected && {
-												backgroundColor: colors.surfaceVariant,
+											{
+												backgroundColor: selected
+													? colors.surfaceVariant
+													: 'transparent',
 											},
 										]}
 									>
 										<View style={styles.optionContent}>
-											{switching && selected ? (
-												<ActivityIndicator
-													size='small'
-													style={styles.optionIndicator}
-												/>
-											) : (
+											<View pointerEvents='none'>
 												<RadioButton
 													value={option.value}
 													status={selected ? 'checked' : 'unchecked'}
-													disabled={switching}
 												/>
-											)}
+											</View>
 											<View style={styles.optionText}>
 												<View style={styles.optionHeader}>
 													<Text variant='titleSmall'>{option.label}</Text>
@@ -264,12 +312,7 @@ const AudioQualityModal = () => {
 				</ScrollView>
 			</Dialog.Content>
 			<Dialog.Actions>
-				<Button
-					disabled={switching}
-					onPress={() => close('AudioQuality')}
-				>
-					关闭
-				</Button>
+				<Button onPress={() => close('AudioQuality')}>关闭</Button>
 			</Dialog.Actions>
 		</>
 	)
@@ -292,6 +335,20 @@ const styles = StyleSheet.create({
 		marginBottom: 12,
 		gap: 2,
 	},
+	actualHeader: {
+		flexDirection: 'row',
+		alignItems: 'center',
+		justifyContent: 'space-between',
+	},
+	actualHeaderLabel: {
+		flexShrink: 1,
+	},
+	actualIndicatorSlot: {
+		height: 16,
+		width: 16,
+		alignItems: 'center',
+		justifyContent: 'center',
+	},
 	actualTitle: {
 		fontWeight: 'bold',
 	},
@@ -310,9 +367,6 @@ const styles = StyleSheet.create({
 		flexDirection: 'row',
 		alignItems: 'center',
 		gap: 4,
-	},
-	optionIndicator: {
-		marginHorizontal: 14,
 	},
 	optionText: {
 		flexShrink: 1,
