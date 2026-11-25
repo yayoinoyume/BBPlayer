@@ -5,12 +5,17 @@ import {
 	Skia,
 	vec,
 } from '@shopify/react-native-skia'
+import type { SkPathBuilder } from '@shopify/react-native-skia'
 import Color from 'color'
 import { memo, useCallback, useMemo, useState } from 'react'
 import type { LayoutChangeEvent } from 'react-native'
 import { StyleSheet, View } from 'react-native'
 import { useTheme } from 'react-native-paper'
-import { useDerivedValue, type SharedValue } from 'react-native-reanimated'
+import {
+	useDerivedValue,
+	useSharedValue,
+	type SharedValue,
+} from 'react-native-reanimated'
 import Svg, { Line, Text as SvgText } from 'react-native-svg'
 
 import {
@@ -58,6 +63,43 @@ function clampCurveDb(value: number): number {
 	if (!Number.isFinite(value)) return 0
 
 	return Math.min(Math.max(value, -CURVE_RANGE_DB), CURVE_RANGE_DB)
+}
+
+function appendCurveToBuilder(
+	builder: SkPathBuilder,
+	response: readonly number[],
+	pointXs: readonly number[],
+	centerY: number,
+	scale: number,
+): void {
+	'worklet'
+
+	const pointCount = pointXs.length
+
+	if (pointCount === 0) return
+
+	builder.moveTo(pointXs[0], centerY - clampCurveDb(response[0]) * scale)
+
+	for (let index = 1; index < pointCount - 1; index += 1) {
+		const x = pointXs[index]
+
+		const y = centerY - clampCurveDb(response[index]) * scale
+
+		const nextX = pointXs[index + 1]
+
+		const nextY = centerY - clampCurveDb(response[index + 1]) * scale
+
+		builder.quadTo(x, y, (x + nextX) / 2, (y + nextY) / 2)
+	}
+
+	if (pointCount > 1) {
+		const lastIndex = pointCount - 1
+
+		builder.lineTo(
+			pointXs[lastIndex],
+			centerY - clampCurveDb(response[lastIndex]) * scale,
+		)
+	}
 }
 
 interface StaticChartProps {
@@ -181,53 +223,44 @@ export default function EqResponseCurve({
 		[chartWidth, xRatios],
 	)
 
-	const responseDb = useDerivedValue(
-		() =>
-			evaluateEqResponseWorklet(
-				bandGainSharedValues.map((sharedGain) => sharedGain.get()),
-				preampSharedValue.get(),
-				EQ_CURVE_TABLE,
-			),
-		[bandGainSharedValues, preampSharedValue],
-	)
+	const lineBuilderSeed = useMemo(() => Skia.PathBuilder.Make(), [])
+
+	const fillBuilderSeed = useMemo(() => Skia.PathBuilder.Make(), [])
+
+	const lineBuilder = useSharedValue(lineBuilderSeed)
+
+	const fillBuilder = useSharedValue(fillBuilderSeed)
+
+	const responseDb = useDerivedValue(() => {
+		const gains = new Array<number>(bandGainSharedValues.length)
+
+		for (let index = 0; index < bandGainSharedValues.length; index += 1) {
+			gains[index] = bandGainSharedValues[index].get()
+		}
+
+		return evaluateEqResponseWorklet(
+			gains,
+			preampSharedValue.get(),
+			EQ_CURVE_TABLE,
+		)
+	}, [bandGainSharedValues, preampSharedValue])
 
 	const linePath = useDerivedValue(() => {
-		const response = responseDb.get()
+		const builder = lineBuilder.get()
 
-		const builder = Skia.PathBuilder.Make()
+		builder.reset()
 
-		const pointCount = pointXs.length
-
-		if (pointCount === 0) return builder.build()
-
-		builder.moveTo(pointXs[0], centerY - clampCurveDb(response[0]) * scale)
-
-		for (let index = 1; index < pointCount - 1; index += 1) {
-			const x = pointXs[index]
-
-			const y = centerY - clampCurveDb(response[index]) * scale
-
-			const nextX = pointXs[index + 1]
-
-			const nextY = centerY - clampCurveDb(response[index + 1]) * scale
-
-			builder.quadTo(x, y, (x + nextX) / 2, (y + nextY) / 2)
-		}
-
-		if (pointCount > 1) {
-			const lastIndex = pointCount - 1
-
-			builder.lineTo(
-				pointXs[lastIndex],
-				centerY - clampCurveDb(response[lastIndex]) * scale,
-			)
-		}
+		appendCurveToBuilder(builder, responseDb.get(), pointXs, centerY, scale)
 
 		return builder.build()
-	}, [centerY, pointXs, responseDb, scale])
+	}, [centerY, lineBuilder, pointXs, responseDb, scale])
 
 	const fillPath = useDerivedValue(() => {
-		const builder = Skia.PathBuilder.MakeFromPath(linePath.get())
+		const builder = fillBuilder.get()
+
+		builder.reset()
+
+		appendCurveToBuilder(builder, responseDb.get(), pointXs, centerY, scale)
 
 		const pointCount = pointXs.length
 
@@ -240,7 +273,7 @@ export default function EqResponseCurve({
 		}
 
 		return builder.build()
-	}, [centerY, linePath, pointXs])
+	}, [centerY, fillBuilder, pointXs, responseDb, scale])
 
 	const strokeColor = enabled ? colors.primary : colors.outline
 
