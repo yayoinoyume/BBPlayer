@@ -2,7 +2,7 @@ name: Build Free Test APK
 
 on:
   push:
-    branches: [ci/verify-sync02f-probe]
+    branches: [ci/verify-sync02f]
   workflow_dispatch:
     inputs:
       buildType:
