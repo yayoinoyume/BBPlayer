@@ -216,7 +216,7 @@ declare class NativeOrpheusModule extends NativeModule<OrpheusEvents> {
 	playbackResumeStrategy: ResumeStrategy
 	/** 是否显示并启用音频频谱分析。 */
 	isSpectrumVisualizerEnabled: boolean
-	/** 是否启用原生 10 段均衡器。开启时会关闭音频 offload。 */
+	/** 是否启用原生 10 段均衡器。开启后播放走 PCM 处理链。 */
 	isEqualizerEnabled: boolean
 	/** 功耗测量用（仅 Android，重启 App 后生效）：不用 FFmpeg，PCM 也交给 MediaCodec 解码。 */
 	testForceMediaCodec: boolean
