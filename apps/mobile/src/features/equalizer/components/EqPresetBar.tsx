@@ -98,6 +98,7 @@ export default function EqPresetBar({
 						compact
 						icon='tune-variant'
 						selected={preset.id === activePresetId}
+						disabled={!presetsReady}
 						showSelectedCheck={false}
 						testID={`eq-preset-${preset.id}`}
 						onPress={() => onSelect(preset)}

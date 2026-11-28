@@ -240,11 +240,9 @@ function BandSlider({
 				withTiming(nextGainDb, { duration: ACCESSIBILITY_ANIMATION_MS }),
 			)
 
-			onChange(index, nextGainDb)
-
 			onCommit(index, nextGainDb)
 		},
-		[gainSharedValue, index, onChange, onCommit],
+		[gainSharedValue, index, onCommit],
 	)
 
 	const thumbStyle = useAnimatedStyle(() => ({
@@ -347,9 +345,13 @@ export default function EqBandSliders({
 		const activeDrags = activeDragsRef.current
 
 		return () => {
-			activeDrags.clear()
+			if (activeDrags.size > 0) {
+				activeDrags.clear()
+
+				onDragActiveChange(false)
+			}
 		}
-	}, [])
+	}, [onDragActiveChange])
 
 	return (
 		<ScrollView

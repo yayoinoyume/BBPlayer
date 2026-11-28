@@ -553,7 +553,7 @@ declare class NativeOrpheusModule extends NativeModule<OrpheusEvents> {
 		bandIndex: number,
 		gainDb: number,
 	): Promise<EqualizerSettings>
-	/** 设置均衡器前置增益（dB）。 */
+	/** 设置均衡器前置增益（dB），并把当前预设标记为自定义。 */
 	setEqualizerPreamp(preampDb: number): Promise<EqualizerSettings>
 	/** 开关软限幅器，并返回应用后的状态。 */
 	setEqualizerLimiterEnabled(enabled: boolean): Promise<EqualizerSettings>

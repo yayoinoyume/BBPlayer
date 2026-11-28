@@ -140,9 +140,8 @@ class EqualizerDsp(
         z1.fill(0.0)
         z2.fill(0.0)
         appliedVersion = Long.MIN_VALUE
-        val target = dbToLinear(configHolder.get().preampDb.toDouble())
-        targetPreampGain = target
-        currentPreampGain = target
+        targetPreampGain = 1.0
+        currentPreampGain = 1.0
         preampStep = 0.0
         preampRampRemaining = 0
         limiterEnabled = true

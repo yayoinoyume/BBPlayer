@@ -178,10 +178,8 @@ function PreampControl({
 
 		setDisplayValue(0)
 
-		onChange(0)
-
 		onCommit(0)
-	}, [onChange, onCommit])
+	}, [onCommit])
 
 	const isAndroid = Platform.OS === 'android'
 
@@ -722,7 +720,7 @@ export default function EqualizerSettingsPage() {
 
 		pendingPreampRef.current = null
 
-		if (!isAndroid) return
+		if (!isAndroid || readiness.settings !== 'ready') return
 
 		const previousGains = [...lastVisualTargetRef.current.gainsDb]
 
@@ -745,7 +743,7 @@ export default function EqualizerSettingsPage() {
 				toastAndLogError('重置均衡器失败', error, 'Equalizer')
 			}
 		})()
-	}, [applySettledSettings, isAndroid, pushVisualTarget])
+	}, [applySettledSettings, isAndroid, pushVisualTarget, readiness])
 
 	const handleSelectPreset = useCallback(
 		(preset: EqualizerPreset) => {
@@ -936,7 +934,11 @@ export default function EqualizerSettingsPage() {
 
 			preampSharedValue.set(preampDb)
 
-			commitSettings((previous) => ({ ...previous, preampDb }))
+			commitSettings((previous) =>
+				previous.activePresetId === null
+					? { ...previous, preampDb }
+					: { ...previous, preampDb, activePresetId: null },
+			)
 
 			if (!isAndroid) return
 
