@@ -836,6 +836,8 @@ export default function EqualizerSettingsPage() {
 			lastVisualTargetRef.current.gainsDb[bandIndex] = gainDb
 
 			commitSettings((previous) => {
+				if (previous.gainsDb[bandIndex] === gainDb) return previous
+
 				const gainsDb = [...previous.gainsDb]
 
 				gainsDb[bandIndex] = gainDb
@@ -935,8 +937,8 @@ export default function EqualizerSettingsPage() {
 			preampSharedValue.set(preampDb)
 
 			commitSettings((previous) =>
-				previous.activePresetId === null
-					? { ...previous, preampDb }
+				previous.preampDb === preampDb
+					? previous
 					: { ...previous, preampDb, activePresetId: null },
 			)
 

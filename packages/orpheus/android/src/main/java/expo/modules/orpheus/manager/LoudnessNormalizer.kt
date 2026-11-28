@@ -131,7 +131,7 @@ class LoudnessAudioSink(
         processor.onStreamStarted(outputStreamOffsetUs)
     }
 
-    // 响度归一化或均衡器任一开启时拒绝直通：sink 若接受压缩格式（AAC、FLAC 等），
+    // 响度归一化或均衡器任一开启时拒绝直通：sink 若接受压缩格式，
     // MediaCodecAudioRenderer 会把压缩数据原样交给 sink，不经过处理器链，响度增益与均衡器都不会生效。
     // 拒绝后渲染器改解码成 PCM；系统无对应解码器时由 FfmpegAudioRenderer 解码。
     //
