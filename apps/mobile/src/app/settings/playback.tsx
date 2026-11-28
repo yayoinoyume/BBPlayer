@@ -1,6 +1,10 @@
-import { Orpheus } from '@bbplayer/orpheus'
-import { useRouter } from 'expo-router'
-import { useState } from 'react'
+import {
+	BUILTIN_EQ_PRESETS,
+	Orpheus,
+	useEqualizerEnabled,
+} from '@bbplayer/orpheus'
+import { useFocusEffect, useRouter } from 'expo-router'
+import { useCallback, useState } from 'react'
 import { Platform, ScrollView, StyleSheet, View } from 'react-native'
 import {
 	Appbar,
@@ -20,6 +24,10 @@ import {
 	formatAudioQualityLabel,
 	getAudioQualityOption,
 } from '@/constants/audioQuality'
+import {
+	findPresetDisplayName,
+	parseCustomPresetsJson,
+} from '@/features/equalizer/utils/customPresets'
 import useCurrentTrack from '@/hooks/player/useCurrentTrack'
 import usePreferredAudioQuality from '@/hooks/player/usePreferredAudioQuality'
 import useAppStore from '@/hooks/stores/useAppStore'
@@ -42,6 +50,47 @@ export default function PlaybackSettingsPage() {
 	const openModal = useModalStore((state) => state.open)
 	const canConfigureAudioQuality = Platform.OS === 'android'
 	const audioQuality = usePreferredAudioQuality()
+	const canConfigureEqualizer = Platform.OS === 'android'
+	const equalizerEnabled = useEqualizerEnabled()
+
+	const [equalizerPresetName, setEqualizerPresetName] = useState<string | null>(
+		null,
+	)
+
+	useFocusEffect(
+		useCallback(() => {
+			if (!canConfigureEqualizer) return
+
+			let cancelled = false
+
+			void (async () => {
+				try {
+					const [nativeSettings, customPresetsJson] = await Promise.all([
+						Orpheus.getEqualizerSettings(),
+						Orpheus.getCustomEqualizerPresetsJson(),
+					])
+
+					if (cancelled) return
+
+					setEqualizerPresetName(
+						findPresetDisplayName(
+							nativeSettings.activePresetId,
+							BUILTIN_EQ_PRESETS,
+							parseCustomPresetsJson(customPresetsJson),
+						),
+					)
+				} catch (error) {
+					if (!cancelled) {
+						toastAndLogError('读取均衡器状态失败', error, 'Settings')
+					}
+				}
+			})()
+
+			return () => {
+				cancelled = true
+			}
+		}, [canConfigureEqualizer]),
+	)
 
 	const defaultPlayerMode = useAppStore(
 		(state) => state.settings.defaultPlayerMode,
@@ -116,10 +165,10 @@ export default function PlaybackSettingsPage() {
 					<TouchableRipple
 						testID='playback-audio-quality'
 						borderless
-						style={styles.audioQualityRow}
+						style={styles.navigationRow}
 						onPress={() => openModal('AudioQuality', undefined)}
 					>
-						<View style={styles.audioQualityRowContent}>
+						<View style={styles.navigationRowContent}>
 							<View style={styles.settingDescription}>
 								<Text>默认音质</Text>
 								<Text
@@ -129,13 +178,41 @@ export default function PlaybackSettingsPage() {
 									{audioQualityDescription}
 								</Text>
 							</View>
-							<View style={styles.audioQualityValue}>
+							<View style={styles.navigationRowValue}>
 								<Text
 									variant='labelLarge'
 									numberOfLines={1}
 								>
 									{audioQualityLabel}
 								</Text>
+								<Icon
+									source='chevron-right'
+									size={20}
+								/>
+							</View>
+						</View>
+					</TouchableRipple>
+				)}
+				{canConfigureEqualizer && (
+					<TouchableRipple
+						testID='playback-equalizer'
+						borderless
+						style={styles.navigationRow}
+						onPress={() => router.push('/settings/equalizer')}
+					>
+						<View style={styles.navigationRowContent}>
+							<View style={styles.settingDescription}>
+								<Text>均衡器（EQ）</Text>
+								<Text
+									variant='bodySmall'
+									style={{ color: colors.onSurfaceVariant }}
+								>
+									{equalizerEnabled
+										? `已开启${equalizerPresetName ? ` · ${equalizerPresetName}` : ''}`
+										: '已关闭'}
+								</Text>
+							</View>
+							<View style={styles.navigationRowValue}>
 								<Icon
 									source='chevron-right'
 									size={20}
@@ -242,19 +319,19 @@ const styles = StyleSheet.create({
 		flexShrink: 1,
 		marginEnd: 12,
 	},
-	audioQualityRow: {
+	navigationRow: {
 		marginTop: 16,
 		marginHorizontal: -12,
 		borderRadius: LIST_ITEM_BORDER_RADIUS,
 		paddingHorizontal: 12,
 		paddingVertical: 10,
 	},
-	audioQualityRowContent: {
+	navigationRowContent: {
 		flexDirection: 'row',
 		alignItems: 'center',
 		justifyContent: 'space-between',
 	},
-	audioQualityValue: {
+	navigationRowValue: {
 		flexDirection: 'row',
 		alignItems: 'center',
 		flexShrink: 0,

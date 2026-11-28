@@ -33,6 +33,11 @@ export interface ModalPropsMap {
 	DonationQR: { type: 'wechat' | 'alipay' }
 	PlaybackSpeed: undefined
 	AudioQuality: undefined
+	EqPresetName: {
+		mode: 'create' | 'rename'
+		initialName?: string
+		onConfirm: (name: string) => void | Promise<void>
+	}
 	LyricsSelection: undefined
 	SongShare: undefined
 	SyncLocalToBilibili: { playlistId: number }
