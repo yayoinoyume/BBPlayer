@@ -24,7 +24,6 @@ import Button from '@/components/common/Button'
 import IconButton from '@/components/common/IconButton'
 import SettingsSectionTitle from '@/components/common/SettingsSectionTitle'
 import UniversalSwitch from '@/components/common/UniversalSwitch'
-import { useSettingsSplit } from '@/components/layout/SettingsNavigation'
 import EqBandSliders from '@/features/equalizer/components/EqBandSliders'
 import EqPresetBar from '@/features/equalizer/components/EqPresetBar'
 import EqResponseCurve from '@/features/equalizer/components/EqResponseCurve'
@@ -236,7 +235,6 @@ function PreampControl({
 						min={EQ_MIN_GAIN_DB}
 						max={EQ_MAX_GAIN_DB}
 						steps={PREAMP_STEPS}
-						enabled={enabled}
 						colors={{
 							thumbColor: activeColor,
 							activeTrackColor: activeColor,
@@ -268,7 +266,6 @@ function PreampControl({
 
 export default function EqualizerSettingsPage() {
 	const router = useRouter()
-	const split = useSettingsSplit()
 	const { colors } = useTheme()
 	const insets = useSafeAreaInsets()
 	const haveTrack = useCurrentTrack()
@@ -1037,7 +1034,7 @@ export default function EqualizerSettingsPage() {
 	return (
 		<View style={[styles.container, { backgroundColor: colors.background }]}>
 			<Appbar.Header>
-				{!split && <Appbar.BackAction onPress={() => router.back()} />}
+				<Appbar.BackAction onPress={() => router.back()} />
 				<Appbar.Content title='均衡器' />
 				<Appbar.Action
 					icon='restart'
@@ -1250,10 +1247,6 @@ const styles = StyleSheet.create({
 		flex: 1,
 		flexShrink: 1,
 		marginEnd: 12,
-	},
-	hint: {
-		marginTop: 12,
-		opacity: 0.9,
 	},
 	divider: {
 		height: StyleSheet.hairlineWidth,

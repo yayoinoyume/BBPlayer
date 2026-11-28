@@ -8,9 +8,8 @@ import androidx.media3.common.MediaItem
 import com.tencent.mmkv.MMKV
 import expo.modules.orpheus.manager.AudioQualityStore
 import expo.modules.orpheus.manager.EQ_BAND_COUNT
-import expo.modules.orpheus.manager.EQ_MAX_GAIN_DB
-import expo.modules.orpheus.manager.EQ_MIN_GAIN_DB
 import expo.modules.orpheus.manager.EqualizerConfigHolder
+import expo.modules.orpheus.manager.sanitizeEqGain
 import expo.modules.orpheus.model.TrackRecord
 import expo.modules.orpheus.telemetry.LogTags
 import expo.modules.orpheus.telemetry.OrpheusTelemetry
@@ -315,11 +314,11 @@ object GeneralStorage {
         }
     }
 
-    fun getEqualizerPreampDb(): Float = sanitizeEqualizerGain(kv?.decodeFloat(KEY_EQUALIZER_PREAMP_DB, 0f) ?: 0f)
+    fun getEqualizerPreampDb(): Float = sanitizeEqGain(kv?.decodeFloat(KEY_EQUALIZER_PREAMP_DB, 0f) ?: 0f)
 
     fun setEqualizerPreampDb(preampDb: Float) {
         try {
-            safeKv.encode(KEY_EQUALIZER_PREAMP_DB, sanitizeEqualizerGain(preampDb))
+            safeKv.encode(KEY_EQUALIZER_PREAMP_DB, sanitizeEqGain(preampDb))
         } catch (e: Exception) {
             NativeLog.error(LogTags.STORAGE, "storage.equalizer.preamp.set_failed", error = e)
         }
@@ -356,13 +355,13 @@ object GeneralStorage {
             return FloatArray(EQ_BAND_COUNT)
         }
         return FloatArray(EQ_BAND_COUNT) { index ->
-            sanitizeEqualizerGain(parsed.getOrElse(index) { 0f })
+            sanitizeEqGain(parsed.getOrElse(index) { 0f })
         }
     }
 
     fun setEqualizerGains(gainsDb: FloatArray) {
         val sanitized = FloatArray(EQ_BAND_COUNT) { index ->
-            sanitizeEqualizerGain(gainsDb.getOrElse(index) { 0f })
+            sanitizeEqGain(gainsDb.getOrElse(index) { 0f })
         }
         setEqualizerGainsJson(json.encodeToString(sanitized.toList()))
     }
@@ -414,7 +413,4 @@ object GeneralStorage {
             )
         }
     }
-
-    private fun sanitizeEqualizerGain(value: Float): Float =
-        if (!value.isFinite()) 0f else value.coerceIn(EQ_MIN_GAIN_DB, EQ_MAX_GAIN_DB)
 }

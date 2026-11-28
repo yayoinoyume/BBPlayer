@@ -3,11 +3,10 @@ import { StyleSheet } from 'react-native'
 import { Dialog, Text, TextInput, useTheme } from 'react-native-paper'
 
 import Button from '@/components/common/Button'
+import { MAX_PRESET_NAME_LENGTH } from '@/features/equalizer/utils/customPresets'
 import { useModalStore } from '@/hooks/stores/useModalStore'
 import type { ModalPropsMap } from '@/types/navigation'
 import { toastAndLogError } from '@/utils/error-handling'
-
-export const MAX_PRESET_NAME_LENGTH = 24
 
 export default function EqPresetNameModal({
 	mode,

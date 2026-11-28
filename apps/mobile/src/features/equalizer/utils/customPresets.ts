@@ -7,7 +7,7 @@ const EQ_MIN_GAIN_DB = -12
 
 const EQ_MAX_GAIN_DB = 12
 
-const MAX_PRESET_NAME_LENGTH = 24
+export const MAX_PRESET_NAME_LENGTH = 24
 
 const CUSTOM_PRESET_ID_PREFIX = 'custom-'
 

@@ -49,7 +49,7 @@ private const val EQ_PCM_FLOAT_BYTES_PER_SAMPLE = 4
 
 private val EQ_IDENTITY_COEFFICIENTS = doubleArrayOf(1.0, 0.0, 0.0, 0.0, 0.0)
 
-private fun sanitizeEqGain(value: Float): Float =
+internal fun sanitizeEqGain(value: Float): Float =
     if (!value.isFinite()) 0f else value.coerceIn(EQ_MIN_GAIN_DB, EQ_MAX_GAIN_DB)
 
 class EqualizerState(
