@@ -556,6 +556,18 @@ export default function EqualizerSettingsPage() {
 				applySettledSettings(next)
 			} catch (error) {
 				toastAndLogError(failureMessage, error, 'Equalizer')
+
+				try {
+					const settled = await Orpheus.getEqualizerSettings()
+
+					applySettledSettings(settled)
+				} catch (reloadError) {
+					eqLogger.warning(
+						'equalizer.state.reload_failed',
+						{ 'operation.message': '均衡器状态回读失败' },
+						reloadError,
+					)
+				}
 			}
 		},
 		[applySettledSettings],
@@ -588,6 +600,22 @@ export default function EqualizerSettingsPage() {
 
 	const applyPreset = useCallback(
 		(preset: EqualizerPreset) => {
+			if (bandTimerRef.current !== null) {
+				clearTimeout(bandTimerRef.current)
+
+				bandTimerRef.current = null
+			}
+
+			pendingBandRef.current = null
+
+			if (preampTimerRef.current !== null) {
+				clearTimeout(preampTimerRef.current)
+
+				preampTimerRef.current = null
+			}
+
+			pendingPreampRef.current = null
+
 			if (!isAndroid || readiness.settings !== 'ready') return
 
 			const next = {
@@ -625,6 +653,22 @@ export default function EqualizerSettingsPage() {
 	)
 
 	const handleToggleEnabled = useCallback(() => {
+		if (bandTimerRef.current !== null) {
+			clearTimeout(bandTimerRef.current)
+
+			bandTimerRef.current = null
+		}
+
+		pendingBandRef.current = null
+
+		if (preampTimerRef.current !== null) {
+			clearTimeout(preampTimerRef.current)
+
+			preampTimerRef.current = null
+		}
+
+		pendingPreampRef.current = null
+
 		if (!isAndroid || readiness.settings !== 'ready') return
 
 		const current = settingsRef.current
@@ -662,6 +706,22 @@ export default function EqualizerSettingsPage() {
 	}, [commitSettings, isAndroid, readiness, runEqualizerAction])
 
 	const handleReset = useCallback(() => {
+		if (bandTimerRef.current !== null) {
+			clearTimeout(bandTimerRef.current)
+
+			bandTimerRef.current = null
+		}
+
+		pendingBandRef.current = null
+
+		if (preampTimerRef.current !== null) {
+			clearTimeout(preampTimerRef.current)
+
+			preampTimerRef.current = null
+		}
+
+		pendingPreampRef.current = null
+
 		if (!isAndroid) return
 
 		const previousGains = [...lastVisualTargetRef.current.gainsDb]

@@ -136,6 +136,15 @@ function BandSlider({
 
 			moved.set(false)
 
+			scheduleOnRN(onDragActiveChange, index, true)
+
+			const now = Date.now()
+
+			const maybeSecondTap =
+				lastTapAt.get() > 0 && now - lastTapAt.get() <= DOUBLE_TAP_INTERVAL_MS
+
+			if (maybeSecondTap) return
+
 			lastNativeSendAt.set(0)
 
 			const gain = yToGain(event.y)
@@ -145,8 +154,6 @@ function BandSlider({
 			const quantized = quantizeGainDb(gain)
 
 			lastSentGainDb.set(quantized)
-
-			scheduleOnRN(onDragActiveChange, index, true)
 
 			scheduleOnRN(onChange, index, quantized)
 		},

@@ -94,11 +94,12 @@ test('页面守卫：开关切换先同步提交设置，再调用原生', () =>
 		const nativeIndex = block.indexOf('runEqualizerAction(')
 
 		assert.ok(nativeIndex > commitIndex, `${anchor} 必须先提交设置再调用原生`)
-		assert.doesNotMatch(
-			block,
-			/previous|onFailure/,
-			`${anchor} 不应再有失败回滚`,
+		assert.match(
+			PAGE_SOURCE,
+			/Orpheus\.getEqualizerSettings\(\)/,
+			`${anchor} 失败时必须回读原生状态`,
 		)
+		assert.match(PAGE_SOURCE, /catch/, `${anchor} 必须有失败处理`)
 	}
 })
 
@@ -121,7 +122,7 @@ test('页面守卫：runEqualizerAction 不再接受失败回调', () => {
 		'const runEqualizerAction = useCallback',
 	)
 
-	assert.doesNotMatch(block, /onFailure/)
+	assert.match(block, /applySettledSettings\(/, `回读后必须应用到本地状态`)
 	assert.match(block, /toastAndLogError\(failureMessage/)
 })
 

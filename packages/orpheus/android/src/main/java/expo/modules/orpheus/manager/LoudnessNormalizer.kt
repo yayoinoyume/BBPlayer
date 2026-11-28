@@ -151,7 +151,7 @@ class LoudnessAudioSink(
     private fun rejectsPassthrough(format: Format) =
         format.sampleMimeType != MimeTypes.AUDIO_RAW &&
             !DolbySupport.isDolbyMimeType(format.sampleMimeType) &&
-            (GeneralStorage.isLoudnessNormalizationEnabled() || GeneralStorage.isEqualizerEnabled())
+            (GeneralStorage.isLoudnessNormalizationEnabled() || EqualizerConfigHolder.get().enabled)
 }
 
 /**

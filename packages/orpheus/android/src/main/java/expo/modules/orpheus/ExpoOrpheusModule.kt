@@ -254,24 +254,24 @@ class ExpoOrpheusModule : Module() {
     )
 
     /**
-     * 以当前状态为基准写入一次 EQ 变更：读当前状态、更新 holder、落盘、生成快照与发送事件都在锁内，
-     * 保证并发提交时事件顺序与状态提交顺序一致
+     * 以当前状态为基准写入一次 EQ 变更：读当前状态、落盘、更新 holder、生成快照与发送事件都在锁内，
+     * 保证并发提交时事件顺序与状态提交顺序一致；落盘失败会直接抛出，holder 保持旧值
      */
     private fun applyEqualizerSettings(update: (EqualizerState) -> EqualizerUpdate): Map<String, Any?> =
         synchronized(equalizerLock) {
             val state = EqualizerConfigHolder.get()
             val next = update(state)
+            GeneralStorage.setEqualizerEnabled(next.enabled)
+            GeneralStorage.setEqualizerPreampDb(next.preampDb)
+            GeneralStorage.setEqualizerLimiterEnabled(next.limiterEnabled)
+            GeneralStorage.setEqualizerGains(next.gainsDb)
+            GeneralStorage.setEqualizerActivePresetId(next.activePresetId)
             EqualizerConfigHolder.update(
                 enabled = next.enabled,
                 preampDb = next.preampDb,
                 limiterEnabled = next.limiterEnabled,
                 gainsDb = next.gainsDb,
             )
-            GeneralStorage.setEqualizerEnabled(next.enabled)
-            GeneralStorage.setEqualizerPreampDb(next.preampDb)
-            GeneralStorage.setEqualizerLimiterEnabled(next.limiterEnabled)
-            GeneralStorage.setEqualizerGains(next.gainsDb)
-            GeneralStorage.setEqualizerActivePresetId(next.activePresetId)
             buildEqualizerSettingsMap().also { settings ->
                 runCatching { sendEvent("onEqualizerChanged", settings) }
             }
@@ -1412,7 +1412,7 @@ class ExpoOrpheusModule : Module() {
                     preampDb = preampDb.toFloat(),
                     limiterEnabled = state.limiterEnabled,
                     gainsDb = state.copyOfGains(),
-                    activePresetId = GeneralStorage.getEqualizerActivePresetId(),
+                    activePresetId = null,
                 )
             }
         }

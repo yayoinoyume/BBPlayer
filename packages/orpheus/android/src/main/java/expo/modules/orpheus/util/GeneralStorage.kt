@@ -288,7 +288,7 @@ object GeneralStorage {
         (data[KEY_EQUALIZER_ACTIVE_PRESET_ID] as? String)?.let { presetId ->
             setEqualizerActivePresetId(presetId.ifEmpty { null })
         }
-        (data[KEY_CUSTOM_EQUALIZER_PRESETS_JSON] as? String)?.let { value ->
+        (data[KEY_CUSTOM_EQUALIZER_PRESETS_JSON] as? String)?.takeIf { it.isNotBlank() }?.let { value ->
             runCatching { setCustomEqualizerPresetsJson(value) }
                 .onFailure {
                     NativeLog.error(LogTags.STORAGE, "storage.equalizer.presets.import_failed", error = it)
@@ -307,30 +307,48 @@ object GeneralStorage {
     fun isEqualizerEnabled(): Boolean = kv?.decodeBool(KEY_EQUALIZER_ENABLED, false) ?: false
 
     fun setEqualizerEnabled(enabled: Boolean) {
-        try {
+        val saved = try {
             safeKv.encode(KEY_EQUALIZER_ENABLED, enabled)
         } catch (e: Exception) {
             NativeLog.error(LogTags.STORAGE, "storage.equalizer.enabled.set_failed", error = e)
+            throw e
+        }
+        if (!saved) {
+            val error = IllegalStateException("storage.equalizer.enabled.set_failed: encode returned false")
+            NativeLog.error(LogTags.STORAGE, "storage.equalizer.enabled.set_failed", error = error)
+            throw error
         }
     }
 
     fun getEqualizerPreampDb(): Float = sanitizeEqGain(kv?.decodeFloat(KEY_EQUALIZER_PREAMP_DB, 0f) ?: 0f)
 
     fun setEqualizerPreampDb(preampDb: Float) {
-        try {
+        val saved = try {
             safeKv.encode(KEY_EQUALIZER_PREAMP_DB, sanitizeEqGain(preampDb))
         } catch (e: Exception) {
             NativeLog.error(LogTags.STORAGE, "storage.equalizer.preamp.set_failed", error = e)
+            throw e
+        }
+        if (!saved) {
+            val error = IllegalStateException("storage.equalizer.preamp.set_failed: encode returned false")
+            NativeLog.error(LogTags.STORAGE, "storage.equalizer.preamp.set_failed", error = error)
+            throw error
         }
     }
 
     fun isEqualizerLimiterEnabled(): Boolean = kv?.decodeBool(KEY_EQUALIZER_LIMITER_ENABLED, true) ?: true
 
     fun setEqualizerLimiterEnabled(enabled: Boolean) {
-        try {
+        val saved = try {
             safeKv.encode(KEY_EQUALIZER_LIMITER_ENABLED, enabled)
         } catch (e: Exception) {
             NativeLog.error(LogTags.STORAGE, "storage.equalizer.limiter.set_failed", error = e)
+            throw e
+        }
+        if (!saved) {
+            val error = IllegalStateException("storage.equalizer.limiter.set_failed: encode returned false")
+            NativeLog.error(LogTags.STORAGE, "storage.equalizer.limiter.set_failed", error = error)
+            throw error
         }
     }
 
@@ -339,10 +357,16 @@ object GeneralStorage {
             ?: DEFAULT_EQUALIZER_GAINS_JSON
 
     fun setEqualizerGainsJson(value: String) {
-        try {
+        val saved = try {
             safeKv.encode(KEY_EQUALIZER_GAINS_JSON, value)
         } catch (e: Exception) {
             NativeLog.error(LogTags.STORAGE, "storage.equalizer.gains.set_failed", error = e)
+            throw e
+        }
+        if (!saved) {
+            val error = IllegalStateException("storage.equalizer.gains.set_failed: encode returned false")
+            NativeLog.error(LogTags.STORAGE, "storage.equalizer.gains.set_failed", error = error)
+            throw error
         }
     }
 
@@ -374,10 +398,16 @@ object GeneralStorage {
     }
 
     fun setEqualizerActivePresetId(presetId: String?) {
-        try {
+        val saved = try {
             safeKv.encode(KEY_EQUALIZER_ACTIVE_PRESET_ID, presetId ?: "")
         } catch (e: Exception) {
             NativeLog.error(LogTags.STORAGE, "storage.equalizer.preset.set_failed", error = e)
+            throw e
+        }
+        if (!saved) {
+            val error = IllegalStateException("storage.equalizer.preset.set_failed: encode returned false")
+            NativeLog.error(LogTags.STORAGE, "storage.equalizer.preset.set_failed", error = error)
+            throw error
         }
     }
 
