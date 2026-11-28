@@ -281,12 +281,35 @@ object GeneralStorage {
         (data[KEY_LOUDNESS_NORMALIZATION_ENABLED] as? Boolean)?.let { setLoudnessNormalizationEnabled(it) }
         (data[KEY_AUTOPLAY_ON_START_ENABLED] as? Boolean)?.let { setAutoplayOnStartEnabled(it) }
         (data[KEY_SPECTRUM_VISUALIZER_ENABLED] as? Boolean)?.let { setSpectrumVisualizerEnabled(it) }
-        (data[KEY_EQUALIZER_ENABLED] as? Boolean)?.let { setEqualizerEnabled(it) }
-        (data[KEY_EQUALIZER_PREAMP_DB] as? Number)?.let { setEqualizerPreampDb(it.toFloat()) }
-        (data[KEY_EQUALIZER_LIMITER_ENABLED] as? Boolean)?.let { setEqualizerLimiterEnabled(it) }
-        (data[KEY_EQUALIZER_GAINS_JSON] as? String)?.let { setEqualizerGainsJson(it) }
+        (data[KEY_EQUALIZER_ENABLED] as? Boolean)?.let { value ->
+            runCatching { setEqualizerEnabled(value) }
+                .onFailure {
+                    NativeLog.error(LogTags.STORAGE, "storage.equalizer.enabled.import_failed", error = it)
+                }
+        }
+        (data[KEY_EQUALIZER_PREAMP_DB] as? Number)?.let { value ->
+            runCatching { setEqualizerPreampDb(value.toFloat()) }
+                .onFailure {
+                    NativeLog.error(LogTags.STORAGE, "storage.equalizer.preamp.import_failed", error = it)
+                }
+        }
+        (data[KEY_EQUALIZER_LIMITER_ENABLED] as? Boolean)?.let { value ->
+            runCatching { setEqualizerLimiterEnabled(value) }
+                .onFailure {
+                    NativeLog.error(LogTags.STORAGE, "storage.equalizer.limiter.import_failed", error = it)
+                }
+        }
+        (data[KEY_EQUALIZER_GAINS_JSON] as? String)?.let { value ->
+            runCatching { setEqualizerGainsJson(value) }
+                .onFailure {
+                    NativeLog.error(LogTags.STORAGE, "storage.equalizer.gains.import_failed", error = it)
+                }
+        }
         (data[KEY_EQUALIZER_ACTIVE_PRESET_ID] as? String)?.let { presetId ->
-            setEqualizerActivePresetId(presetId.ifEmpty { null })
+            runCatching { setEqualizerActivePresetId(presetId.ifEmpty { null }) }
+                .onFailure {
+                    NativeLog.error(LogTags.STORAGE, "storage.equalizer.preset.import_failed", error = it)
+                }
         }
         (data[KEY_CUSTOM_EQUALIZER_PRESETS_JSON] as? String)?.takeIf { it.isNotBlank() }?.let { value ->
             runCatching { setCustomEqualizerPresetsJson(value) }
